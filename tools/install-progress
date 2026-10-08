@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# install-progress — live progress/ETA for the macOS install happening in the
+# "macos" libvirt domain.
+#
+#   ./install-progress                 # monitor until it stops growing
+#   TOTAL_GIB=16 ./install-progress    # if you know the real download size
+#
+# Why this measures the disk and not the network: the macOS installer streams
+# the ~13 GB shared-support volume straight into the guest's disk, so the
+# target image's allocation is a faithful (and locally-observable) proxy for
+# download progress. Network counters include the VM's other chatter; disk
+# allocation does not.
+#
+# No sudo needed: virsh domblkinfo reads the allocation through libvirt.
+set -uo pipefail
+
+DOMAIN=${DOMAIN:-macos}
+DISK=${DISK:-sda}
+INTERVAL=${INTERVAL:-5}
+# Rough size of the macOS shared-support download in GiB. The real figure varies
+# per release; override with TOTAL_GIB=... once you can see the finish line, or
+# just watch the "elapsed" figure, which needs no total at all.
+TOTAL_GIB=${TOTAL_GIB:-14}
+
+alloc_bytes() {
+  virsh -c qemu:///system domblkinfo "$DOMAIN" "$DISK" 2>/dev/null \
+    | awk '/Allocation/{print $2}'
+}
+
+hum() { # bytes -> human
+  awk -v b="$1" 'BEGIN{
+    split("B KiB MiB GiB TiB", u, " ");
+    i=1; while (b >= 1024 && i < 5) { b/=1024; i++ }
+    printf "%.2f %s", b, u[i]
+  }'
+}
+
+hms() { # seconds -> 1h02m03s
+  awk -v s="$1" 'BEGIN{
+    if (s < 0 || s != s) { print "--"; exit }
+    h=int(s/3600); m=int((s%3600)/60); sec=int(s%60);
+    if (h) printf "%dh%02dm%02ds", h, m, sec; else printf "%dm%02ds", m, sec
+  }'
+}
+
+TOTAL_BYTES=$(awk -v g="$TOTAL_GIB" 'BEGIN{printf "%d", g*1073741824}')
+
+prev=$(alloc_bytes)
+[ -n "${prev:-}" ] || { echo "cannot read allocation for $DOMAIN/$DISK" >&2; exit 1; }
+start=$prev
+start_ts=$(date +%s)
+prev_ts=$start_ts
+stalled=0
+
+# terminal width for the bar
+COLS=$(tput cols 2>/dev/null || echo 80)
+[ "$COLS" -gt 100 ] && COLS=100
+
+printf '\033[?25l'                     # hide cursor
+trap 'printf "\033[?25h\n"; exit 0' INT TERM
+
+while :; do
+  now=$(alloc_bytes)
+  now_ts=$(date +%s)
+  dt=$((now_ts - prev_ts))
+  [ "$dt" -le 0 ] && dt=1
+  rate=$(( (now - prev) / dt ))        # B/s, instantaneous
+  elapsed=$((now_ts - start_ts))
+  avg=$(( (now - start) / (elapsed > 0 ? elapsed : 1) ))
+
+  # progress bar + ETA against the assumed total
+  pct=$(awk -v n="$now" -v t="$TOTAL_BYTES" 'BEGIN{ if (t<=0) {print 0; exit} p=100*n/t; if(p>100)p=100; printf "%.1f", p }')
+  filled=$(awk -v p="$pct" -v w="$((COLS-46))" 'BEGIN{ if(w<10)w=10; n=int(p*w/100+0.5); if(n>w)n=w; for(i=0;i<n;i++)printf "="; for(i=n;i<w;i++)printf " "; }')
+
+  if [ "$rate" -gt 0 ]; then
+    eta=$(awk -v t="$TOTAL_BYTES" -v n="$now" -v r="$rate" 'BEGIN{ if(r<=0){print -1; exit} printf "%d", (t-n)/r }')
+  else
+    eta=-1
+  fi
+
+  # stall detection: nothing written since the last sample
+  if [ "$now" -le "$prev" ]; then stalled=$((stalled+dt)); else stalled=0; fi
+
+  printf '\r\033[K  [%s] %5s%%  %s  %s/s  eta %s  elapsed %s' \
+    "$filled" "$pct" "$(hum "$now")" "$(hum "$rate")" "$(hms "$eta")" "$(hms "$elapsed")"
+
+  # Stop conditions: long stall, or the download looks complete.
+  if [ "$stalled" -ge 120 ]; then
+    printf '\n\n  No growth for %ss. Either the download finished and the\n  install phase began (CPU-bound, watch the VM), or it stalled.\n' "$stalled"
+    printf '  Disk allocation: %s\n' "$(hum "$now")"
+    break
+  fi
+  if [ "$now" -ge "$TOTAL_BYTES" ]; then
+    printf '\n\n  Reached the %s GiB estimate. If it is still writing,\n  re-run with a larger TOTAL_GIB to keep tracking.\n' "$TOTAL_GIB"
+    break
+  fi
+
+  prev=$now
+  prev_ts=$now_ts
+  sleep "$INTERVAL"
+done
+
+printf '\033[?25h'
