@@ -64,9 +64,6 @@ the card's DP-1.
 **Verified on:** ASUS ROG laptop, Intel Core Ultra 9 285H, NVIDIA RTX 5080 Max-Q
 (mobile GB203M; its ids are `10de:2c59`/`10de:22e9`), NixOS host, QEMU 11.1.1, macOS 15.8.1 guest.
 
-The RTX 5080 Max-Q is **not** a GPU the driver author tested (they used an RTX 5060,
-`2d05`). It works here regardless, but a mobile GB203M is a slightly unusual target.
-
 ### Software
 
 | | |
@@ -88,7 +85,6 @@ Enter firmware setup and enable, in roughly this order:
 | **Resizable BAR** / **Re-Size BAR Support** | **Enabled** | Required for the BAR sizing in section 5. |
 | **SR-IOV** (if present) | Enabled | Harmless, occasionally needed. |
 | **CSM** / Legacy boot | **Disabled** | UEFI boot only; OpenCore and OVMF need UEFI. |
-| **Secure Boot** | leave as-is | **This is the host's firmware, and it does not affect the guest.** Guests have their own setting (OpenCore's `SecureBootModel`), and that one must be `Disabled` for macOS. Do not disable host Secure Boot for this. |
 | **Virtualization** (VT-x / SVM) | Enabled | Obviously. |
 
 Firmware menus differ wildly; on some boards "Above 4G" is under *PCI Subsystem Settings*
@@ -188,8 +184,11 @@ to pass through. Two ways:
 * **`vfio-pci.ids=`** in the kernel command line, as above — the simplest and most robust.
 * Or softdep the driver: `softdep nvidia pre: vfio-pci` (distribution-specific).
 
-You do **not** need to blacklist `nvidia` entirely if you have a second NVIDIA card you
-want to keep using on the host.
+**Do not blacklist `nvidia` if you intend to hot-swap.** The swap-back path in
+[section 4](#4-binding-the-gpu-to-vfio-pci-and-hot-swapping-it-back) rebinds the card to
+the host driver, and that needs `nvidia` to still be loadable. Keeping a second NVIDIA
+card working on the host is a reason too, but hot-swapping is the one that will bite you:
+blacklisting turns a reversible handoff into a reboot.
 
 ---
 
