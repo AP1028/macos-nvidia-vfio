@@ -1,22 +1,16 @@
 <domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
-  <!-- INSTALL-PHASE CONFIGURATION.
-       No PCI passthrough and an emulated GPU, so the macOS installer is
-       visible on the SPICE console. Use config/macos-passthrough.xml once
-       macOS is installed. Both files are otherwise identical on purpose. -->
   <name>macos</name>
   <uuid>9b5b38a2-6667-4962-b89f-5ed53a52e499</uuid>
-  <title>macOS (OpenCore) — INSTALL PHASE</title>
+  <title>macOS (OpenCore)</title>
   <description>
-      macOS guest for the NullMoth NVIDIA driver work -- INSTALL PHASE.
-
-      No PCI passthrough yet: this boots on QEMU's emulated vmvga, which is all
-      the installer needs, and the SPICE console provides display plus keyboard
-      and mouse. The NVIDIA card is not attached in this file.
-
-      Once macOS is installed, switch to config/macos-passthrough.xml, which
-      passes the card through behind a PCIe root port with video='none'. The two
-      files are kept as close as possible so the difference is obvious.
-    </description>
+    macOS guest for the NullMoth NVIDIA driver work, in its INSTALLER phase:
+    this is the configuration to run macOS Setup with, before any GPU is passed
+    through. It boots on QEMU's emulated VGA (vmvga), which the SPICE console
+    displays, so the installer is visible and the console also supplies
+    keyboard and mouse input. There are no PCI hostdevs and no USB hostdevs
+    here. See macos-passthrough.xml for the working passthrough configuration,
+    and the README in this repository for the full write-up.
+  </description>
   <metadata>
     <libosinfo:libosinfo xmlns:libosinfo="http://libosinfo.org/xmlns/libvirt/domain/1.0">
       <libosinfo:os id="http://apple.com/macos"/>
@@ -83,18 +77,16 @@
     <emulator>/run/libvirt/nix-emulators/qemu-system-x86_64</emulator>
 
     <controller type='pci' index='0' model='pcie-root'/>
-    <!-- The GPU is passed through BEHIND THIS ROOT PORT: index 1 is the root
-         port at 00:02.0, which is guest bus 0x01, and the two hostdevs at the
-         bottom of this file sit on bus 0x01 slot 0x00 function 0x0/0x1.
-
-         Putting the card behind a root port (rather than on the root complex
-         at bus 0x00) only works in combination with the
+    <!-- The GPU is passed through BEHIND THIS ROOT PORT in macos-passthrough.xml:
+         index 1 is the root port at 00:02.0, which is guest bus 0x01, and the
+         two hostdevs there sit on bus 0x01 slot 0x00 function 0x0/0x1. That
+         only works in combination with the
          ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off argument in
-         <qemu:commandline>: without that property macOS never resources a
-         device behind a bridge. See that argument for the full explanation.
+         <qemu:commandline>, which is explained there.
 
-         The remaining root ports (indices 2-5) are declared and currently
-         unused. -->
+         Nothing is attached to any of these root ports during installation, so
+         they are inert here; they are kept so that this file differs from
+         macos-passthrough.xml as little as possible. -->
     <controller hotplug='off' type='pci' index='1' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='1' port='0x10'/>
@@ -146,11 +138,23 @@
       <boot order='1'/>
     </disk>
 
-    <!-- The macOS recovery media (BaseSystem.img) was attached here as sdc.
-         It is DETACHED now that macOS is installed: it was the "macOS Base
-         System" entry in the OpenCore picker. The image is untouched at
-         /home/tianyixia/OSX-KVM/BaseSystem.img if it is ever needed again
-         (re-add as a raw disk on bus='sata' and give it a boot order). -->
+    <!-- macOS recovery media. This file is the INSTALL-PHASE configuration, so
+         the recovery image is attached: it appears as the "macOS Base System"
+         entry in the OpenCore picker, and it is what macOS Setup installs from.
+
+         Raw, not qcow2 : the image is used as-is. Boot order 3 puts it after
+         OpenCore (1) and the target disk (2), so OpenCore loads first and the
+         picker decides. The installer writes to sda; this image is only read.
+
+         The passthrough configuration does NOT attach it, since by then macOS is
+         installed and boots from sda. Re-add it there if you ever need to
+         reinstall. -->
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='raw' cache='writeback'/>
+      <source file='/home/tianyixia/OSX-KVM/BaseSystem.img'/>
+      <target dev='sdc' bus='sata'/>
+      <boot order='3'/>
+    </disk>
 
     <!-- NIC: vmxnet3 ON BUS 0x00.
 
@@ -172,9 +176,9 @@
          on virbr0. That was not inherent to root ports; it was QEMU emitting
          ACPI hotplug for the bridges, and it is what the
          ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off argument at the
-         bottom of this file switches off. The GPU now sits behind a root port
-         (bus 0x01) and is resourced correctly, so the NIC could move; it stays
-         on bus 0x00 for the built-in flag.
+         bottom of this file switches off. In macos-passthrough.xml the GPU
+         sits behind a root port (bus 0x01) and is resourced correctly, so the
+         NIC could move; it stays on bus 0x00 for the built-in flag.
 
          Slot 0x03 is used because the root bus is otherwise full: 0x02.0-0x02.4
          are pcie-root-ports, 0x1f.2 is the SATA controller, 0x07.0-0x07.7 are
@@ -219,7 +223,9 @@
          ich9-uhci* companions below never get driven and any full/low-speed
          passed-through device is invisible (the emulated QEMU keyboard works
          only because it is high-speed on the EHCI). XHCI handles all speeds
-         with no companion controller, so passed-through devices go here.
+         with no companion controller; in macos-passthrough.xml the two
+         passed-through USB devices attach to it. It is kept, empty, here so
+         that the two configurations differ as little as possible.
          Note: USBPorts.kext in the OpenCore ESP matches ACPI names
          EH01/UHC1-3, which this guest's ACPI does not declare, so that map
          matches nothing. -->
@@ -248,14 +254,13 @@
     <graphics type='spice' autoport='yes' listen='127.0.0.1'>
       <listen type='address' address='127.0.0.1'/>
     </graphics>
-    <!-- EMULATED GPU, unlike the passthrough configuration. This file is for
-         INSTALLING macOS, before the NVIDIA is passed through, so the installer
-         needs a display to draw into: vmvga on the SPICE console, which also
-         provides keyboard and mouse. That is also why no USB hostdevs appear
-         here: they exist in macos-passthrough.xml only because video='none'
-         leaves the SPICE console with no way to deliver input.
-
-         Once macOS is installed, switch to macos-passthrough.xml. -->
+    <!-- EMULATED VGA, for the installer. macOS Setup is driven from the SPICE
+         console, so this file keeps an emulated GPU, and the console supplies
+         keyboard and mouse input with it. This is the installer configuration
+         only: macos-passthrough.xml sets <model type='none'/> here instead,
+         because once the NullMoth driver loads the passed-through NVIDIA must
+         be the guest's only display device, so that NVRMFB can own display
+         index 0. -->
     <video>
       <model type='vmvga' heads='1' primary='yes'/>
     </video>
@@ -275,6 +280,13 @@
       </target>
     </serial>
 
+    <!-- The GPU and its audio function are passed through here in
+         macos-passthrough.xml: host 01:00.0 / 01:00.1, guest bus 0x01 slot
+         0x00 function 0x0 / 0x1, behind the pcie-root-port above. They are
+         deliberately absent during installation, because macOS Setup needs no
+         discrete GPU and the SPICE console (see <video> above) provides the
+         keyboard and mouse. macos-passthrough.xml also carries the two USB
+         hostdevs that take over guest input once the emulated GPU is gone. -->
     <memballoon model='none'/>
   </devices>
 
@@ -295,18 +307,13 @@
          NullMoth driver was tested on). -->
     <qemu:arg value='-smbios'/>
     <qemu:arg value='type=2'/>
-    <!-- THE KEY FIX. Bridge-level ACPI hotplug OFF. With this property on
-         (QEMU's default) QEMU advertises ACPI hotplug slots for the PCIe
-         bridges, and macOS 15, which enumerates PCIe through ACPI,
-         IOPCIHPType = 0x21, defers enumeration of anything behind a root port
-         to runtime, so it never happens and the GPU behind the root port is
-         left with "(not mapped)" BARs and IRQ 0. With the property off, macOS
-         assigns resources to the device behind the root port normally.
-
-         OSX-KVM carries exactly this line (OpenCore-Boot.sh:47) commented out;
-         the per-root-port hotplug='off' attributes on the controllers above do
-         not reach it. This bridge-level switch is what governs the ACPI hotplug
-         slots QEMU emits, and therefore what sets macOS's IOPCIHPType. -->
+    <!-- The bridge-level ACPI hotplug switch, kept here even though it does
+         nothing in this configuration: with no PCI hostdevs there is no device
+         behind a root port for macOS to fail to resource, so the property is
+         harmless. It is kept so that the installer runs the same QEMU
+         invocation as the working passthrough configuration, and so that the
+         two files differ as little as possible. macos-passthrough.xml explains
+         what this property does and why it is the key fix there. -->
     <qemu:arg value='-global'/>
     <qemu:arg value='ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off'/>
   </qemu:commandline>
