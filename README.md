@@ -595,6 +595,37 @@ echo 1 | sudo tee /sys/bus/pci/devices/0000:01:00.0/reset
 sudo scripts/gpu-to-vfio.sh 16GiB    # rebind and re-size
 ```
 
+**Two ways through this section. Pick by what your display does — not by preference.**
+
+| what you see | what to do |
+|---|---|
+| macOS reaches a **login window** on the passed-through card | Use **1401.app**. It is the vendor's own installer and it does the whole job: the driver, the OpenCore config, the `Kernel → Block` entry, the display-head publication. Download `1401-Mac-*.dmg` from the driver's releases, run it in the guest, reboot. |
+| macOS **boots but shows nothing** — a cursor on black, a frozen Apple logo, or `screencapture` failing with *"could not create image from display 0"* | Do **not** reach for the tar first. Work through the checks below in order; the usual cause is the OSK or a dirty GPU, not the driver. If those are clean and it still will not display, install from the tar and run `nullmoth-setup.sh` from the 1401 zip, which is the half `install.sh` does not do. |
+
+**Which is which, and why it matters.** 1401.app wraps two scripts. `install.sh` (129
+lines, shipped in `nullmoth-nvidia-*.tar.gz`) installs the files and rebuilds the kernel
+collection. `nullmoth-setup.sh` (**639 lines, only in 1401.app**) edits the OpenCore config —
+`boot-args`, `csr-active-config`, and the `com.apple.iokit.IONDRVSupport` entry in
+`Kernel.Block` — installs a crash-check agent and a recovery daemon, finds which ESP actually
+booted by reading OpenCore's own `boot-path` NVRAM variable, and runs the display bring-up
+diagnostics. **A tar-only install does the first and none of the second**, which produces
+four loaded kexts, a correctly placed 16 GiB BAR, an 8 GiB budget, generated frames, and no
+desktop.
+
+**Run `nullmoth-setup.sh` as the app does**, from a directory containing `nullmoth-install.sh`,
+with every input it demands:
+
+```bash
+sudo ./nullmoth-setup.sh \
+  --pkg  /path/to/nullmoth-nvidia-<ver>.tar.gz \
+  --sha  <its published sha256> \
+  --tool /path/to/NullMothSafe.efi \
+  --app  /path/to/1401.app/Contents/MacOS/1401
+```
+
+It refuses to run on a loose copy: `--tool` is required, and it insists the audited installer
+sits beside it. Both come from `1401.app/Contents/Resources/` in the release zip.
+
 **Before you install, check four things.** The installer writes kernel collections and loads
 unsigned kexts, so it fails in ways that look like package corruption when the real cause is
 one of these. Run all four first:
