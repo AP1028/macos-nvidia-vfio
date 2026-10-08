@@ -19,11 +19,8 @@ DOMAIN_XML=$HERE/macos.xml
 [ "$(id -u)" -eq 0 ] || { echo "STOP: run with sudo" >&2; exit 1; }
 
 echo "== 1. guest disk"
-# Ownership: NixOS renders qemu.conf from verbatimConfig, and a bare
-# `namespaces = []` makes libvirt treat the file as non-empty, so it skips its
-# dynamic-ownership/managed-save settings and never chowns domain disks. QEMU
-# therefore runs as root, and every other disk in this pool is root:root 0600.
-# Match that -- do NOT chown to qemu or qemu-libvirtd.
+# Ownership: if your host generates qemu.conf from a configuration
+# manager, libvirt may refuse a domain whose files it does not own.
 if [ -e "$DISK" ]; then
   echo "   exists: $DISK ($(qemu-img info --output=json "$DISK" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d["virtual-size"]//2**40,"TiB virtual,",d["actual-size"]//2**20,"MiB on disk")'))"
 else

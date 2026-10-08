@@ -133,7 +133,7 @@
     <!-- OpenCore bootloader: does the AppleSMC/board-id work the guest needs. -->
     <disk type='file' device='disk'>
       <driver name='qemu' type='qcow2' cache='writeback'/>
-      <source file='/home/tianyixia/OSX-KVM/OpenCore/OpenCore.qcow2'/>
+      <source file='/path/to/OSX-KVM/OpenCore/OpenCore.qcow2'/>
       <target dev='sdb' bus='sata'/>
       <boot order='1'/>
     </disk>
@@ -151,7 +151,7 @@
          reinstall. -->
     <disk type='file' device='disk'>
       <driver name='qemu' type='raw' cache='writeback'/>
-      <source file='/home/tianyixia/OSX-KVM/BaseSystem.img'/>
+      <source file='/path/to/OSX-KVM/BaseSystem.img'/>
       <target dev='sdc' bus='sata'/>
       <boot order='3'/>
     </disk>

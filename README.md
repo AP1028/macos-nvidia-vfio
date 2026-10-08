@@ -356,14 +356,6 @@ startup; changing it under a running guest does nothing useful.
 `scripts/set-bar1.sh` in this repo does this. **Note its default:** pass the size
 explicitly, e.g. `sudo scripts/set-bar1.sh 17179869184`.
 
-> ### ⚠️ If you use `gpu-to-vfio` from a NixOS config that predates this work
->
-> `packages/gpu-vfio-scripts.nix` in the author's own config still contains
-> `BAR_IDX_VFIO=8` (256 MB) with the comment *"the largest size macOS will actually
-> assign"*. **That comment is obsolete and following it will undo the fix** — 256 MB
-> yields the 192 MB budget. The scripts in this repo set a large BAR instead. If you have
-> a copy of the older scripts, change `BAR_IDX_VFIO` to `14`.
-
 ---
 
 ## 6. OSX-KVM: the pieces macOS needs
@@ -901,7 +893,7 @@ explains why it is needed and how to verify it reached QEMU.
     <!-- OpenCore bootloader: does the AppleSMC/board-id work the guest needs. -->
     <disk type='file' device='disk'>
       <driver name='qemu' type='qcow2' cache='writeback'/>
-      <source file='/home/tianyixia/OSX-KVM/OpenCore/OpenCore.qcow2'/>
+      <source file='/path/to/OSX-KVM/OpenCore/OpenCore.qcow2'/>
       <target dev='sdb' bus='sata'/>
       <boot order='1'/>
     </disk>
@@ -909,7 +901,7 @@ explains why it is needed and how to verify it reached QEMU.
     <!-- The macOS recovery media (BaseSystem.img) was attached here as sdc.
          It is DETACHED now that macOS is installed: it was the "macOS Base
          System" entry in the OpenCore picker. The image is untouched at
-         /home/tianyixia/OSX-KVM/BaseSystem.img if it is ever needed again
+         /path/to/OSX-KVM/BaseSystem.img if it is ever needed again
          (re-add as a raw disk on bus='sata' and give it a boot order). -->
 
     <!-- NIC: vmxnet3 ON BUS 0x00.
@@ -1333,7 +1325,7 @@ last one this file cannot install anything.
     <!-- OpenCore bootloader: does the AppleSMC/board-id work the guest needs. -->
     <disk type='file' device='disk'>
       <driver name='qemu' type='qcow2' cache='writeback'/>
-      <source file='/home/tianyixia/OSX-KVM/OpenCore/OpenCore.qcow2'/>
+      <source file='/path/to/OSX-KVM/OpenCore/OpenCore.qcow2'/>
       <target dev='sdb' bus='sata'/>
       <boot order='1'/>
     </disk>
@@ -1351,7 +1343,7 @@ last one this file cannot install anything.
          reinstall. -->
     <disk type='file' device='disk'>
       <driver name='qemu' type='raw' cache='writeback'/>
-      <source file='/home/tianyixia/OSX-KVM/BaseSystem.img'/>
+      <source file='/path/to/OSX-KVM/BaseSystem.img'/>
       <target dev='sdc' bus='sata'/>
       <boot order='3'/>
     </disk>
@@ -3731,11 +3723,8 @@ DOMAIN_XML=$HERE/macos.xml
 [ "$(id -u)" -eq 0 ] || { echo "STOP: run with sudo" >&2; exit 1; }
 
 echo "== 1. guest disk"
-# Ownership: NixOS renders qemu.conf from verbatimConfig, and a bare
-# `namespaces = []` makes libvirt treat the file as non-empty, so it skips its
-# dynamic-ownership/managed-save settings and never chowns domain disks. QEMU
-# therefore runs as root, and every other disk in this pool is root:root 0600.
-# Match that -- do NOT chown to qemu or qemu-libvirtd.
+# Ownership: if your host generates qemu.conf from a configuration
+# manager, libvirt may refuse a domain whose files it does not own.
 if [ -e "$DISK" ]; then
   echo "   exists: $DISK ($(qemu-img info --output=json "$DISK" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d["virtual-size"]//2**40,"TiB virtual,",d["actual-size"]//2**20,"MiB on disk")'))"
 else
