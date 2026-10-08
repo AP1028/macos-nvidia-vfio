@@ -542,9 +542,13 @@ differs in a VM.
   correct once BAR1 is large. **The installer rewrites this file on every install**, so
   check it afterwards.
 * **boot-args**: exactly as in section 8.
-* **OpenCore**: **`ResizeGpuBars=-1`**, `ResizeAppleGpuBars=-1`, `DevirtualiseMmio=False`,
-  and `Kernel → Block com.apple.iokit.IONDRVSupport` (Exclude) — without that last one the
-  firmware framebuffer takes display index 0 from NVRMFB.
+* **OpenCore**: **`ResizeGpuBars=-1`**, `ResizeAppleGpuBars=-1`, `DevirtualiseMmio=False`.
+
+  **`Kernel → Block com.apple.iokit.IONDRVSupport` is NOT needed here**, contrary to the
+  driver's README. That block exists so the firmware framebuffer cannot take display index 0
+  from NVRMFB, and with `<video>=none` the guest has no firmware framebuffer at all. The
+  README's requirement applies to bare metal, where you cannot remove it. Verified against a
+  working config: no IONDRVSupport block, and NVRMFB owns index 0.
 
   **`-1` is deliberate, and is where this differs from the driver's README, which says
   `13`.** The host sets BAR1 to 16 GiB before the domain starts (section 5), so OpenCore
@@ -3734,7 +3738,6 @@ EOF
 * The [Arch Wiki PCI passthrough](https://wiki.archlinux.org/title/PCI_passthrough_via_OVMF)
   article — the standard reference for section 3 and section 4.
 
-Everything in this guide was measured on the machine described in section 1. Where something is
-an inference rather than a measurement, it is labelled as one — most notably the
-~7.9 GiB parked-bytes figure in section 11.2, which is derived from the refusal condition because
-no counter exposes it.
+Every figure in this guide is measured, except where it is explicitly labelled an
+inference — most notably the ~7.9 GiB parked-bytes figure in section 11.2, which is
+derived from the refusal condition because no counter exposes it.
