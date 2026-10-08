@@ -1522,20 +1522,32 @@ Both sets run on the host, need root, and take the BAR bit index as an argument.
 
 ## Appendix C — findings for the driver author
 
-Full write-up of the defects below, with measurements, is in
-[`FINDINGS.md`](FINDINGS.md). Summary:
+Full write-up with measurements is in [`FINDINGS.md`](FINDINGS.md).
+
+**Many of those findings were measured in an older configuration** — GPU on bus `0x00`
+with a 256 MB BAR and a 192 MB budget — which was the consequence of one QEMU property
+being left at its default, not a macOS requirement. With the fix in this guide the
+driver places a 16 GiB BAR and the budget is 8 GiB, and several findings stop
+reproducing. `FINDINGS.md` classifies all fifteen by era; read that table before acting
+on any of them.
+
+Currently applicable, in severity order:
 
 | # | finding | severity |
 |---|---|---|
-| 12 | **scanout binding survives a display-mode transition** — breaks the session; needs a WindowServer restart | **highest** |
-| 13 | **park leak consumes the budget** — 8-16 refusals per window switch; the parked counter is not exposed | high |
+| 12 | **scanout binding survives a display-mode transition** — breaks the session; needs a WindowServer restart. Reproduced at 16 GiB | **highest** |
+| 13 | **park leak consumes the budget** — 8-16 refusals per window switch; the parked counter is not exposed. Worse, not better, with a large BAR | high |
 | 14 | **Metal → SPIR-V translation dominates runtime** — a persistent pipeline cache would fix the world-load stall | high |
-| 15 | **`NVRM.kext` is not buildable from public sources** — three verified gaps; display code is headers-only, so 12-14 cannot be patched from outside | blocking |
-| 1-11 | earlier findings from driver 1.0.1 — several were symptoms of the GPU being forced onto bus 0 and should be re-checked now the device is presented normally | varies |
+| 15 | **`NVRM.kext` is not buildable from public sources** — three verified gaps; the display code is headers-only, so 12-14 cannot be patched from outside | blocking |
+| 2, 4, 5, 8, 9 | allow-list rung order; no lower refresh rate; resolution change wedges the display; `NVMTL_HWPOOL=1` panics; the park leak itself | varies |
+
+From the old configuration, and to be re-checked rather than acted on: 1, 3, 6, 7 and 10.
+Withdrawn or retracted: **6** (the shipped conf was not the problem, the budget was),
+**7** (obsolete), **11** (a large BAR does work in a VM).
 
 **Concrete requests:** a way to re-bind the scanout without restarting the WindowServer; a
 sysctl exposing `gVramParkedBytes`; release parked allocations; a persistent pipeline
-cache; and publish `build-nvrm.sh` / the Darwin port of the open-gpu-kernel-modules.
+cache; and publish `build-nvrm.sh` or the Darwin port of the open-gpu-kernel-modules.
 
 ---
 
