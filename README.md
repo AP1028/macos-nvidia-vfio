@@ -596,6 +596,38 @@ Follow the driver's own README for the package install; this section covers only
 differs in a VM.
 
 
+**Updating an existing install.** Same script, same inputs — it detects the running driver
+and updates in place, with its own backups (`config.plist.nullmoth-<timestamp>` on the ESP,
+`/Library/NullMoth/backup-<timestamp>` for the driver):
+
+```bash
+sudo ./nullmoth-setup.sh \
+  --pkg ~/Downloads/nullmoth-nvidia-<new>.tar.gz \
+  --sha <published sha256> \
+  --tool ~/NullMothSafe.efi \
+  --app  ~/1401-bin \
+  --efi  disk0s1
+```
+
+**`--efi` is usually necessary.** The script confirms which partition OpenCore started from
+by reading OpenCore's `boot-path` NVRAM variable; **when that variable is empty it stops
+with "OpenCore's startup partition could not be confirmed"** even after finding and naming
+the right candidate. `disk0s1` is the small EFI partition from `diskutil list`.
+
+**And make sure the guest can see the ESP.** An extra disk in the domain shifts the disk
+numbering: a recovery medium left attached as `sdc` with its own `boot order` was enough to
+make the OpenCore partition invisible to `diskutil`, which the updater reports as *"no
+OpenCore config for this Mac on any connected disk"* — pointing at OpenCore rather than at
+the extra disk. The domain should present exactly two:
+
+```
+sda   the macOS disk
+sdb   the OpenCore ESP
+```
+
+If `virsh domblklist` shows more, the running domain is not the one in this repo:
+`virsh undefine --nvram` and define it again.
+
 **The tar package and 1401.app are NOT equivalent, and this is the single most important
 thing in this section.** `install.sh` — the 129-line script in `nullmoth-nvidia-*.tar.gz` —
 installs the files and rebuilds the kernel collection. That is half the job. 1401.app also
