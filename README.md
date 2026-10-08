@@ -536,14 +536,26 @@ Then keep the guest on a fixed address (a libvirt DHCP reservation, or a static 
 Follow the driver's own README for the package install; this section covers only what
 differs in a VM.
 
-* **Driver version**: this guide was written against release **v1.0.13** (driver 1.0.9).
+* **Driver package**: 1.0.9 — the version shipped in the 1401-Mac releases, latest 1.0.14.
+  Install it with 1401.app, or from the package directly.
 * **`/Library/GPUBundles/nvmtl/nvrm610.conf` — leave it at the shipped values.** They are
   correct once BAR1 is large. **The installer rewrites this file on every install**, so
-  check it afterwards rather than assuming an edit survived.
-* **boot-args**: exactly as in section 8. **Do not add `nvrmsettle`** — the driver arms
-  its display and Metal plugin during boot on its own, and the settle delay only papers
-  over a BAR placement that failed.
-* **OpenCore**: `ResizeGpuBars=-1`, `ResizeAppleGpuBars=-1`, `DevirtualiseMmio=False`.
+  check it afterwards.
+* **boot-args**: exactly as in section 8.
+* **OpenCore**: **`ResizeGpuBars=-1`**, `ResizeAppleGpuBars=-1`, `DevirtualiseMmio=False`,
+  and `Kernel → Block com.apple.iokit.IONDRVSupport` (Exclude) — without that last one the
+  firmware framebuffer takes display index 0 from NVRMFB.
+
+  **`-1` is deliberate, and is where this differs from the driver's README, which says
+  `13`.** The host sets BAR1 to 16 GiB before the domain starts (section 5), so OpenCore
+  must leave that BAR alone rather than resizing it underneath. It also pays: the budget is
+  `fBarLen / 2`, so 16 GiB gives **8 GiB against the README's 4**.
+
+  **1401.app writes this value itself when it installs the driver** — "switches OpenCore
+  from the installer's small GPU BAR to the full 8 GB one", i.e. `13`. **Set it back to
+  `-1`** to keep the larger budget, or leave `13` and accept 4 GiB. Do not leave the host
+  BAR at 16 GiB while OpenCore resizes to 8.
+
 
 > **Do not enable `NVMTL_HWPOOL=1`.** It installs private pool classes and correlates with
 > a kernel panic.
