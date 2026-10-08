@@ -339,9 +339,8 @@ Resizable BAR exists at all.
 | 8 GB (RTX 4060, 3070) | 8 GiB (bit 13) | 4 GiB |
 | 4-6 GB | 4 GiB (bit 12) | 2 GiB |
 
-**Pick the largest size the card advertises.** There is no downside here that has been
-measured; the bugs that used to make a large BAR fail are fixed by
-the QEMU setting there.
+**Pick the largest size the card advertises.** There is no measured downside, and a
+large BAR is the entire point: it is what gives the driver room to work.
 
 Verify after setting it:
 
@@ -524,12 +523,12 @@ Follow the driver's own README for the package install; this section covers only
 differs in a VM.
 
 * **Driver version** used here: release **v1.0.13** (driver 1.0.9).
-* **`/Library/GPUBundles/nvmtl/nvrm610.conf` — leave it at the shipped values.** Earlier
-  workarounds that raised its VRAM workspace are unnecessary and were compensating for the
-  192 MB budget. **The installer resets this file every time**, so re-check it after
-  installing.
-* **boot-args**: as in section 8. `nvrmsettle=15000` is *not* needed once the BAR placement
-  succeeds — remove it if you copied it from older notes.
+* **`/Library/GPUBundles/nvmtl/nvrm610.conf` — leave it at the shipped values.** They are
+  correct once BAR1 is large. **The installer rewrites this file on every install**, so
+  check it afterwards rather than assuming an edit survived.
+* **boot-args**: exactly as in section 8. **Do not add `nvrmsettle`** — the driver arms
+  its display and Metal plugin during boot on its own, and the settle delay only papers
+  over a BAR placement that failed.
 * **OpenCore**: `ResizeGpuBars=-1`, `ResizeAppleGpuBars=-1`, `DevirtualiseMmio=False`.
 
 > **Do not enable `NVMTL_HWPOOL=1`.** It installs private pool classes and correlates with
@@ -909,8 +908,7 @@ explains why it is needed and how to verify it reached QEMU.
          Model: vmxnet3, which has a native driver in macOS
          (AppleVmxnet3Ethernet.kext, inside IONetworkingFamily). virtio-net is
          NOT a substitute: macOS x86 has no native driver for non-transitional
-         virtio, which is why an earlier attempt with model='virtio' also gave
-         no network.
+         virtio, which is why model='virtio' gives no network here.
 
          Bus 0 is here for the "built-in" flag, not for enumeration. OSX-KVM's
          macOS-libvirt-Catalina.xml makes the same point in its comment: "Make
@@ -918,12 +916,8 @@ explains why it is needed and how to verify it reached QEMU.
          will make nic built-in and apple-store work". Bus 0 also gets the
          device flagged built-in, which iCloud/App Store sign-in wants.
 
-         An earlier revision had a second, stronger reason to keep the NIC on
-         bus 0x00: a device behind a PCIe root port was ignored by macOS
-         outright: BARs "not mapped", IRQ 0, and no DHCP lease ever appeared
-         on virbr0. That was not inherent to root ports; it was QEMU emitting
-         ACPI hotplug for the bridges, and it is what the
-         ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off argument at the
+         A device behind a PCIe root port is only usable because of the
+                  ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off argument at the
          bottom of this file switches off. The GPU now sits behind a root port
          (bus 0x01) and is resourced correctly, so the NIC could move; it stays
          on bus 0x00 for the built-in flag.
@@ -1353,8 +1347,7 @@ last one this file cannot install anything.
          Model: vmxnet3, which has a native driver in macOS
          (AppleVmxnet3Ethernet.kext, inside IONetworkingFamily). virtio-net is
          NOT a substitute: macOS x86 has no native driver for non-transitional
-         virtio, which is why an earlier attempt with model='virtio' also gave
-         no network.
+         virtio, which is why model='virtio' gives no network here.
 
          Bus 0 is here for the "built-in" flag, not for enumeration. OSX-KVM's
          macOS-libvirt-Catalina.xml makes the same point in its comment: "Make
@@ -1362,12 +1355,8 @@ last one this file cannot install anything.
          will make nic built-in and apple-store work". Bus 0 also gets the
          device flagged built-in, which iCloud/App Store sign-in wants.
 
-         An earlier revision had a second, stronger reason to keep the NIC on
-         bus 0x00: a device behind a PCIe root port was ignored by macOS
-         outright: BARs "not mapped", IRQ 0, and no DHCP lease ever appeared
-         on virbr0. That was not inherent to root ports; it was QEMU emitting
-         ACPI hotplug for the bridges, and it is what the
-         ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off argument at the
+         A device behind a PCIe root port is only usable because of the
+                  ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off argument at the
          bottom of this file switches off. In macos-passthrough.xml the GPU
          sits behind a root port (bus 0x01) and is resourced correctly, so the
          NIC could move; it stays on bus 0x00 for the built-in flag.
@@ -1639,15 +1628,8 @@ case "${1:-}" in -s) SILENT=true; shift;; esac
 #   0=1MB 1=2MB 2=4MB ... 10=1GiB 11=2GiB 12=4GiB 13=8GiB 14=16GiB
 # so the size in bytes is 2^(idx+20).
 #
-# HISTORY — this used to be 8 (256 MB), with a long comment claiming 256 MB
-# was "the value macOS requires" and that a larger BAR made macOS refuse the
-# assignment and the driver fail outright. Those measurements were real but
-# they were a SYMPTOM, not a requirement: they were taken with the GPU on
-# guest bus 0x00, where placeLargeBar1() has no parent bridge to reprogram
-# and logs "bar1: parent root port not found", leaving macOS's own (small)
-# assignment as the only option.
-#
-# The fix is to put the GPU BEHIND A PCIE ROOT PORT (guest bus 0x01) and stop
+# Keep BAR1 large. For this to work the GPU must sit BEHIND A PCIE ROOT PORT
+# (guest bus 0x01), and QEMU must stop advertising ACPI hotplug for PCI bridges:
 # QEMU advertising ACPI hotplug for PCI bridges:
 #
 #     -global ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off
@@ -1657,8 +1639,8 @@ case "${1:-}" in -s) SILENT=true; shift;; esac
 # card, the driver places its own 16 GiB BAR, and the budget goes 192 MB ->
 # 8 GiB. MEASURED: bar1@0x14:0x1000000000+0x400000000, budget 8589934592.
 #
-# Do not lower this back to 256 MB. A small BAR is not "what macOS requires";
-# it is what a VM that cannot present the normal Mac topology is stuck with.
+# Do not lower this. A small BAR is not a requirement of macOS; it is what you
+# are stuck with when the guest cannot present the normal Mac topology.
 BAR_IDX_VFIO=14   # 16 GiB — maximum this card advertises; gives an 8 GiB budget
 BAR_IDX_HOST=14   # 16 GiB — the same; kept separate as they need not match
 
@@ -2250,9 +2232,7 @@ done
 # 8 GiB budget). resource1_resize takes a BIT INDEX:
 # 8=256MiB, 12=4GiB, 13=8GiB, 14=16GiB.
 #
-# HISTORY: this used to be 8 (256 MB), on the belief that macOS would not
-# assign a larger Resizable BAR. That was a symptom of the GPU being on bus
-# 0x00 where the driver had no parent root port; with the GPU behind a PCIe
+# A small BAR is not a macOS requirement. Keep BAR1 large: with the GPU behind a PCIe
 # root port and -global ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off,
 # a 16 GiB BAR is assigned and placed by the driver itself.
 BAR_IDX_VFIO=14   # 16 GiB — must match gpu-to-vfio; see the note there
@@ -3011,7 +2991,6 @@ fi
 #   - mapped VRAM against the budget
 #
 # Written as a file (not an inline ssh heredoc) because nested quoting through
-# ssh has silently mangled two earlier attempts.
 
 L="${1:-unlabelled}"
 SECS="${2:-20}"

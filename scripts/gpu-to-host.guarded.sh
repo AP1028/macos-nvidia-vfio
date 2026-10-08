@@ -140,9 +140,7 @@ done
 # 8 GiB budget). resource1_resize takes a BIT INDEX:
 # 8=256MiB, 12=4GiB, 13=8GiB, 14=16GiB.
 #
-# HISTORY: this used to be 8 (256 MB), on the belief that macOS would not
-# assign a larger Resizable BAR. That was a symptom of the GPU being on bus
-# 0x00 where the driver had no parent root port; with the GPU behind a PCIe
+# A small BAR is not a macOS requirement. Keep BAR1 large: with the GPU behind a PCIe
 # root port and -global ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off,
 # a 16 GiB BAR is assigned and placed by the driver itself.
 BAR_IDX_VFIO=14   # 16 GiB — must match gpu-to-vfio; see the note there

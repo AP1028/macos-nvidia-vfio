@@ -152,8 +152,7 @@
          Model: vmxnet3, which has a native driver in macOS
          (AppleVmxnet3Ethernet.kext, inside IONetworkingFamily). virtio-net is
          NOT a substitute: macOS x86 has no native driver for non-transitional
-         virtio, which is why an earlier attempt with model='virtio' also gave
-         no network.
+         virtio, which is why model='virtio' gives no network here.
 
          Bus 0 is here for the "built-in" flag, not for enumeration. OSX-KVM's
          macOS-libvirt-Catalina.xml makes the same point in its comment: "Make
@@ -161,12 +160,8 @@
          will make nic built-in and apple-store work". Bus 0 also gets the
          device flagged built-in, which iCloud/App Store sign-in wants.
 
-         An earlier revision had a second, stronger reason to keep the NIC on
-         bus 0x00: a device behind a PCIe root port was ignored by macOS
-         outright: BARs "not mapped", IRQ 0, and no DHCP lease ever appeared
-         on virbr0. That was not inherent to root ports; it was QEMU emitting
-         ACPI hotplug for the bridges, and it is what the
-         ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off argument at the
+         A device behind a PCIe root port is only usable because of the
+                  ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off argument at the
          bottom of this file switches off. The GPU now sits behind a root port
          (bus 0x01) and is resourced correctly, so the NIC could move; it stays
          on bus 0x00 for the built-in flag.

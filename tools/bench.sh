@@ -8,7 +8,6 @@
 #   - mapped VRAM against the budget
 #
 # Written as a file (not an inline ssh heredoc) because nested quoting through
-# ssh has silently mangled two earlier attempts.
 
 L="${1:-unlabelled}"
 SECS="${2:-20}"

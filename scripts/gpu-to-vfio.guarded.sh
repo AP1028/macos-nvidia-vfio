@@ -41,15 +41,8 @@ case "${1:-}" in -s) SILENT=true; shift;; esac
 #   0=1MB 1=2MB 2=4MB ... 10=1GiB 11=2GiB 12=4GiB 13=8GiB 14=16GiB
 # so the size in bytes is 2^(idx+20).
 #
-# HISTORY — this used to be 8 (256 MB), with a long comment claiming 256 MB
-# was "the value macOS requires" and that a larger BAR made macOS refuse the
-# assignment and the driver fail outright. Those measurements were real but
-# they were a SYMPTOM, not a requirement: they were taken with the GPU on
-# guest bus 0x00, where placeLargeBar1() has no parent bridge to reprogram
-# and logs "bar1: parent root port not found", leaving macOS's own (small)
-# assignment as the only option.
-#
-# The fix is to put the GPU BEHIND A PCIE ROOT PORT (guest bus 0x01) and stop
+# Keep BAR1 large. For this to work the GPU must sit BEHIND A PCIE ROOT PORT
+# (guest bus 0x01), and QEMU must stop advertising ACPI hotplug for PCI bridges:
 # QEMU advertising ACPI hotplug for PCI bridges:
 #
 #     -global ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off
@@ -59,8 +52,8 @@ case "${1:-}" in -s) SILENT=true; shift;; esac
 # card, the driver places its own 16 GiB BAR, and the budget goes 192 MB ->
 # 8 GiB. MEASURED: bar1@0x14:0x1000000000+0x400000000, budget 8589934592.
 #
-# Do not lower this back to 256 MB. A small BAR is not "what macOS requires";
-# it is what a VM that cannot present the normal Mac topology is stuck with.
+# Do not lower this. A small BAR is not a requirement of macOS; it is what you
+# are stuck with when the guest cannot present the normal Mac topology.
 BAR_IDX_VFIO=14   # 16 GiB — maximum this card advertises; gives an 8 GiB budget
 BAR_IDX_HOST=14   # 16 GiB — the same; kept separate as they need not match
 
