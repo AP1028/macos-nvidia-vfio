@@ -14,23 +14,23 @@ getting past that is what most of the later sections are about.)
 
 ## Contents
 
-1. [What you need](#1-what-you-need)
-2. [Firmware / BIOS](#2-firmware--bios)
-3. [Host: IOMMU and vfio](#3-host-ioommu-and-vfio)
-4. [Binding the GPU to vfio-pci, and hot-swapping it back](#4-binding-the-gpu-to-vfio-pci-and-hot-swapping-it-back)
-5. [Choosing the BAR size — and what your GPU supports](#5-choosing-the-bar-size--and-what-your-gpu-supports)
-6. [OSX-KVM: the pieces macOS needs](#6-osx-kvm-the-pieces-macos-needs)
-7. [libvirt: which config, at which stage](#7-libvirt-which-config-at-which-stage)
-8. [Installing macOS](#8-installing-macos)
-9. [The critical QEMU setting](#9-the-critical-qemu-setting)
-10. [Installing the NullMoth driver](#10-installing-the-nullmoth-driver)
-11. [Verification](#11-verification)
-12. [Known bugs and recovery](#12-known-bugs-and-recovery)
-13. [Troubleshooting: things that do NOT work](#13-troubleshooting-things-that-do-not-work)
-14. [Appendix A — the full domain XML, both stages](#appendix-a--the-full-domain-xml-both-stages)
-15. [Appendix B — supporting files in this repo](#appendix-b--supporting-files-in-this-repo)
-16. [Appendix C — findings for the driver author](#appendix-c--findings-for-the-driver-author)
-17. [Appendix D — full source of every script](#appendix-d--full-source-of-every-script)
+- [1. What you need](#1-what-you-need)
+- [2. Firmware / BIOS](#2-firmware-bios)
+- [3. Host: IOMMU and vfio](#3-host-iommu-and-vfio)
+- [4. Binding the GPU to vfio-pci, and hot-swapping it back](#4-binding-the-gpu-to-vfio-pci-and-hot-swapping-it-back)
+- [5. Choosing the BAR size — and what your GPU supports](#5-choosing-the-bar-size-and-what-your-gpu-supports)
+- [6. OSX-KVM: the pieces macOS needs](#6-osx-kvm-the-pieces-macos-needs)
+- [7. libvirt: which config, at which stage](#7-libvirt-which-config-at-which-stage)
+- [8. Installing macOS](#8-installing-macos)
+- [9. Installing the NullMoth driver](#9-installing-the-nullmoth-driver)
+- [10. Verification](#10-verification)
+- [11. Known bugs and recovery](#11-known-bugs-and-recovery)
+- [12. Troubleshooting: things that do NOT work](#12-troubleshooting-things-that-do-not-work)
+- [Appendix A — the full domain XML, both stages](#appendix-a-the-full-domain-xml-both-stages)
+- [Appendix B — supporting files in this repo](#appendix-b-supporting-files-in-this-repo)
+- [Appendix C — findings for the driver author](#appendix-c-findings-for-the-driver-author)
+- [Appendix D — full source of every script](#appendix-d-full-source-of-every-script)
+- [Credits and provenance](#credits-and-provenance)
 
 ---
 
@@ -41,7 +41,7 @@ getting past that is what most of the later sections are about.)
 | | |
 |---|---|
 | CPU | Intel with VT-d, or AMD with AMD-Vi (IOMMU). Almost everything since ~2015 has it; firmware support is the variable. |
-| GPU | An NVIDIA GPU from the GSP generation (Turing/RTX 20-series or newer). The NullMoth driver targets these. |
+| GPU | An NVIDIA GPU from the GSP generation (Turing/RTX 20-series or newer). Get its ids with `lspci -nn`; wherever this guide needs them it writes `<vendor>:<device>`, for example `10de:2c59`. Substitute your own. |
 | Second GPU | **Strongly recommended.** If the passed-through GPU is your only display adapter, shutting down the VM leaves you with no console. |
 | Display | Anything driven by the passed-through GPU's outputs. Verified here on a 3440x1440 @ 165 Hz monitor on the card's DP-1. |
 
@@ -51,8 +51,18 @@ internal panel and you will see nothing — use an external output, or confirm t
 the dGPU share a path, *before* concluding a driver bug. This machine: external monitor on
 the card's DP-1.
 
+> **If your GPU has no output you can reach** (a laptop dGPU wired only to the internal
+> panel through a MUX, or a card with no connected monitor), you have no way to *see* the
+> guest even once the driver works. **It may be possible to install a virtual display
+> driver in macOS and then stream the desktop to the host with
+> [Moonlight](https://moonlight-stream.org/)**, since the guest would then have a display
+> device that does not depend on a physical output. **This is untested here and is stated
+> as a possibility, not a recipe** — the driver's relationship to a virtual display device
+> is exactly the thing that would need to work, and it is unverified. Do not plan around
+> it without testing.
+
 **Verified on:** ASUS ROG laptop, Intel Core Ultra 9 285H, NVIDIA RTX 5080 Max-Q
-(`10de:2c59`, mobile GB203M), NixOS host, QEMU 11.1.1, macOS 15.8.1 guest.
+(mobile GB203M; its ids are `10de:2c59`/`10de:22e9`), NixOS host, QEMU 11.1.1, macOS 15.8.1 guest.
 
 The RTX 5080 Max-Q is **not** a GPU the driver author tested (they used an RTX 5060,
 `2d05`). It works here regardless, but a mobile GB203M is a slightly unusual target.
@@ -75,10 +85,10 @@ Enter firmware setup and enable, in roughly this order:
 |---|---|---|
 | **VT-d** / **VT for Directed I/O** (Intel) or **IOMMU** / **AMD-Vi** (AMD) | **Enabled** | Without it there are no IOMMU groups and no passthrough. The single most common omission. |
 | **Above 4G Decoding** | **Enabled** | Lets the firmware assign 64-bit BARs. Required for a large BAR. |
-| **Resizable BAR** / **Re-Size BAR Support** | **Enabled** | Required for the BAR sizing in §5. |
+| **Resizable BAR** / **Re-Size BAR Support** | **Enabled** | Required for the BAR sizing in section 5. |
 | **SR-IOV** (if present) | Enabled | Harmless, occasionally needed. |
 | **CSM** / Legacy boot | **Disabled** | UEFI boot only; OpenCore and OVMF need UEFI. |
-| **Secure Boot** | **Disabled** | macOS will not boot under it. |
+| **Secure Boot** | leave as-is | **This is the host's firmware, and it does not affect the guest.** Guests have their own setting (OpenCore's `SecureBootModel`), and that one must be `Disabled` for macOS. Do not disable host Secure Boot for this. |
 | **Virtualization** (VT-x / SVM) | Enabled | Obviously. |
 
 Firmware menus differ wildly; on some boards "Above 4G" is under *PCI Subsystem Settings*
@@ -101,8 +111,10 @@ go back to firmware.
 
 ### Kernel parameters
 
-Enable the IOMMU and use identity mapping for the host (which avoids needless DMA
-translation overhead for devices that stay on the host):
+The IOMMU is enabled through the **kernel command line** — the arguments your bootloader
+passes to the kernel (see the [Arch Wiki: kernel parameters](https://wiki.archlinux.org/title/Kernel_parameters)
+if that is unfamiliar). Enable the IOMMU and use identity mapping for the host, which
+avoids needless DMA translation overhead for devices that stay on the host:
 
 ```
 # Intel
@@ -120,19 +132,23 @@ boot.kernelParams = [ "intel_iommu=on" "iommu=pt" ];
 
 On most other distributions, add them to the kernel command line in your bootloader.
 
+> **Further reading:** the [Arch Wiki PCI passthrough via OVMF](https://wiki.archlinux.org/title/PCI_passthrough_via_OVMF) article is the
+> standard reference for everything in this section and the next, and covers cases this
+guide does not (multi-GPU hosts, `iommu=pt` trade-offs, ACS overrides).
+
 **Optional — bind the GPU to vfio-pci at boot.** Only needed if the GPU is claimed by a
 driver before you can intervene (or if it is the host's only GPU). Add:
 
 ```
-vfio-pci.ids=10de:2c59,10de:22e9
+vfio-pci.ids=<vendor>:<device>,<vendor>:<audio-device>
 ```
 
 Use your own vendor:device ids. Get them with `lspci -nn`:
 
 ```bash
-lspci -nn | grep -i nvidia
-# 01:00.0 VGA compatible controller [0300]: NVIDIA Corporation ... [10de:2c59]
-# 01:00.1 Audio device [0403]: NVIDIA Corporation ... [10de:22e9]
+lspci -nn | grep -i -e nvidia -e vga
+# 01:00.0 VGA compatible controller [0300]: NVIDIA Corporation ... [<vendor>:<device>]
+# 01:00.1 Audio device [0403]: NVIDIA Corporation ... [<vendor>:<audio-device>]
 ```
 
 **Do not add `pcie_acs_override=downstream,multifunction` unless you must.** It exists to
@@ -198,7 +214,7 @@ D=/sys/bus/pci/drivers/vfio-pci
 echo "" > $G/driver_override
 # (3) unbind from the current driver
 echo "0000:01:00.0" > /sys/bus/pci/drivers/$(basename $(readlink $G/driver))/unbind
-# (4) set the BAR size (see §5)
+# (4) set the BAR size (see section 5)
 printf "14\n" > $G/resource1_resize
 # (5) claim it
 echo "vfio-pci" > $G/driver_override
@@ -233,7 +249,8 @@ card is usually idle and this is trivial.
 
 ## 5. Choosing the BAR size — and what your GPU supports
 
-This matters more than anything else in the guide after the QEMU setting in §9. The
+This matters more than anything else in the guide after the QEMU setting (see the comment
+on the `ICH9-LPC` argument in `config/macos-passthrough.xml`). The
 driver's VRAM budget is derived from BAR1:
 
 ```c
@@ -279,7 +296,7 @@ Resizable BAR exists at all.
 | 4-6 GB | 4 GiB (bit 12) | 2 GiB |
 
 **Pick the largest size the card advertises.** There is no downside here that has been
-measured; the bugs that used to make a large BAR fail are described in §9 and are fixed by
+measured; the bugs that used to make a large BAR fail are fixed by
 the QEMU setting there.
 
 Verify after setting it:
@@ -330,7 +347,7 @@ most important setting in this guide was eventually found — **commented out**:
 OpenCore-Boot.sh:47:  # -global ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off
 ```
 
-That line is the difference between a GPU that macOS ignores and one it drives. See §9.
+That line is the difference between a GPU that macOS ignores and one it drives. See the comment on the `ICH9-LPC` argument in `config/macos-passthrough.xml`.
 
 ### What OpenCore is doing for you
 
@@ -381,7 +398,15 @@ Differences from stage 1:
   no display and cannot deliver input. Note the host **loses** those devices while the VM
   holds them.
 * **`<qemu:commandline>`** carries the CPU string, `isa-applesmc`, `-smbios`, and the
-  critical ICH9-LPC property (§9).
+  critical ICH9-LPC property (the ICH9-LPC argument in Appendix A).
+
+> ### ⚠️ Both configs must be edited to work
+>
+> They ship with a **deliberately fake** GPU address (`0xff:1f.0`) and paths from the
+> machine this was written on. Replace the address with your GPU's (the comment above it
+> tells you how) and point the disk paths at your own images. **The domain will fail to
+> start until you do** — that is intentional, so that a mindless copy-paste fails loudly
+> instead of quietly attaching the wrong device.
 
 Switch between them with:
 
@@ -396,7 +421,7 @@ virsh -c qemu:///system start macos
 * **`<video>` and the root-port placement are not cosmetic.** Getting either wrong
   produces a guest that boots to a black screen or an Apple logo with no progress.
 * **libvirt silently drops attributes it does not understand.** `hotplug='off'` on a
-  `<controller>` is one of them. Always verify at QEMU (§9).
+  `<controller>` is one of them. Always verify at QEMU (the ICH9-LPC argument in Appendix A).
 * **The `<qemu:commandline>` block is load-bearing.** If it disappears, macOS hangs at the
   Apple logo with zero CPU.
 * **`hotplug='off'` on root ports does nothing** — it never reaches QEMU. It is not in the
@@ -448,7 +473,7 @@ Then keep the guest on a fixed address (a libvirt DHCP reservation, or a static 
    ```
 
    `debug=0x8 serial=1` sends the kernel log to COM1 — which with `video=none` is your only
-   way to read driver messages. See §11.
+   way to read driver messages. See section 10.
 
 2. Set `SecureBootModel` to `Disabled` and `csr-active-config` as the driver's README
    requires.
@@ -457,80 +482,7 @@ Then keep the guest on a fixed address (a libvirt DHCP reservation, or a static 
 
 ---
 
-## 9. The critical QEMU setting
-
-This is the finding that makes the whole thing work, and it is one line:
-
-```xml
-<qemu:arg value='-global'/>
-<qemu:arg value='ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off'/>
-```
-
-### Why it is necessary
-
-Without it, **macOS will not assign resources to a device behind a PCIe root port.** The
-symptom is distinctive and misleading: the card is visible in PCI config space — macOS
-reads its vendor/device id and bus/device/function — but it is never given a BAR, never
-given an interrupt, and never appears in the IORegistry. The driver therefore never
-attaches.
-
-The cause is that QEMU's root ports advertise **zero-size `ranges`** when ACPI hotplug for
-bridges is on. Read from a running guest:
-
-```
-root port S10@2
-  "class-code" = <00040600>            PCI-to-PCI bridge
-  "ranges"     = < 00000082 00000000 00000000  00000082 00000000 00000000  00000000 00000000
-                   000000c2 00000000 00000000  000000c2 00000000 00000000  00000000 00000000
-                   00000081 00000000 00000000  00000081 00000000 00000000  00000000 00000000 >
-```
-
-Three window descriptors — 32-bit MMIO (`0x82`), 64-bit prefetchable (`0xc2`), I/O
-(`0x81`) — every size **zero**. The bridge effectively tells macOS it has no address space,
-and macOS believes it.
-
-**Linux does not care**, which is the measurement that proved where the fault lay. On the
-identical QEMU config, Linux resources the same card behind the same root port perfectly:
-
-| guest | IRQ | BARs | root port windows |
-|---|---|---|---|
-| Linux | 11 | all, incl. BAR1 256 MB above 4G | `prefetchable memory range [0x1000000000 ...]` |
-| macOS | **0** | **none** | its own 4 KB register BAR only |
-
-### Why this placement matters
-
-`placeLargeBar1()` in the driver **requires a parent root port**: it reprograms that
-bridge's prefetchable window to cover the relocated BAR. With the GPU on bus `0x00` (the
-root complex) there is no such bridge, and the driver logs:
-
-```
-bar1: parent root port not found
-```
-
-...and gives up. The card is then left with whatever BAR macOS assigned, which is the
-192 MB ceiling. Put the GPU behind a root port and let macOS resource it, and the driver
-does the placement itself — which is the whole point of the exercise.
-
-**Putting the GPU behind a root port is the normal Mac topology**, by the way. On real
-hardware a discrete GPU sits behind a root port, so the driver is not making an odd
-assumption; a VM that cannot present that topology is the anomaly.
-
-### Verify it reached QEMU
-
-libvirt will accept a `<controller hotplug='off'/>` attribute and silently discard it, so
-check the actual command line:
-
-```bash
-P=$(pgrep -f "guest=macos" | head -1)
-tr '\0' '\n' < /proc/$P/cmdline | grep -c acpi-pci-hotplug-with-bridge-support   # >= 1
-```
-
-**This is the general rule for this whole setup: verify at the consumer, never at the
-writer.** Every silent-drop incident in this project had the same shape.
-
----
-
-## 10. Installing the NullMoth driver
+## 9. Installing the NullMoth driver
 
 Follow the driver's own README for the package install; this section covers only what
 differs in a VM.
@@ -540,7 +492,7 @@ differs in a VM.
   workarounds that raised its VRAM workspace are unnecessary and were compensating for the
   192 MB budget. **The installer resets this file every time**, so re-check it after
   installing.
-* **boot-args**: as in §8. `nvrmsettle=15000` is *not* needed once the BAR placement
+* **boot-args**: as in section 8. `nvrmsettle=15000` is *not* needed once the BAR placement
   succeeds — remove it if you copied it from older notes.
 * **OpenCore**: `ResizeGpuBars=-1`, `ResizeAppleGpuBars=-1`, `DevirtualiseMmio=False`.
 
@@ -549,7 +501,7 @@ differs in a VM.
 
 ---
 
-## 11. Verification
+## 10. Verification
 
 ```bash
 # the driver reached pass 2 and claimed the GPU
@@ -613,11 +565,11 @@ compositor flips: 2436 -> 135.3 fps
 91-140 fps between runs on identical configuration; parks, refusals and ms/flip are stable.
 
 **And note what continuous-drag fps misses.** The same session reported its best-ever
-figures *while window switching was failing*. See the park leak in §12.
+figures *while window switching was failing*. See the park leak in section 11.
 
 ---
 
-## 12. Known bugs and recovery
+## 11. Known bugs and recovery
 
 Driver-side defects, current as of driver 1.0.9. None is fixable by configuration — and
 `NVRM.kext` cannot be built from public sources, so they have to go upstream
@@ -705,7 +657,7 @@ sleep state — go to step 1.
 
 ---
 
-## 13. Troubleshooting: things that do NOT work
+## 12. Troubleshooting: things that do NOT work
 
 Do not spend time on these. Each was applied and **verified present at QEMU** before being
 ruled out — that verification step is what makes the list trustworthy.
@@ -758,11 +710,13 @@ had the parent bridge it requires.
 Everything is inline here so this file is self-contained. The same content is also in
 `config/` for direct use.
 
+**Both files must be edited before use** — see the warning in Appendix B.
+
 ### A.1 — `config/macos-passthrough.xml` (the working configuration)
 
-This is the file that is running. Both GPU functions are passed through at guest bus
-`0x01` (behind a PCIe root port), `<video>` is `none`, and the last two `qemu:arg`
-elements are the fix from §9.
+Both GPU functions are passed through at guest bus `0x01` (behind a PCIe root port),
+`<video>` is `none`, and the `ICH9-LPC` argument at the end is the fix. Its comment
+explains why it is needed and how to verify it reached QEMU.
 
 ```xml
 <domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
@@ -1079,11 +1033,6 @@ elements are the fix from §9.
          through ACPI (IOPCIHPType = 0x21), and while QEMU advertises ACPI
          hotplug for the bridges macOS defers enumeration of everything behind a
          root port to runtime, which never happens: the card then shows up as
-              Bus 1, device 0, function 0: 10de:2c59
-                 IRQ 0, pin A
-                 BAR0/BAR1/BAR5: (not mapped)
-         with no 10de vendor-id anywhere in ioreg. With the property off, macOS
-         assigns resources to the device behind the root port normally.
 
          The host BAR1 is sized to 16 GiB before the domain starts
          (resource1_resize, bit index 14; see the README and gpu-to-vfio), and a
@@ -1093,17 +1042,31 @@ elements are the fix from §9.
          libvirt bind vfio itself (the card is already on vfio-pci anyway).
          There is deliberately NO <rom bar='off'/>: macOS needs the native
          option ROM here. -->
+    <!-- ============================================================
+         EDIT THIS. 0xff:1f.0 below is a DELIBERATELY FAKE address: it is not
+         a real device on any machine, so the domain will fail to start until
+         you replace it with YOUR GPU's host address.
+
+         Find it with:   lspci -nn | grep -i -e nvidia -e vga
+         It looks like:  0000:01:00.0  ->  bus='0x01' slot='0x00' function='0x0'
+         (format: bus:slot.function, hex; the 0000: prefix is the domain)
+
+         Both functions must point at the SAME card: function 0 is the GPU,
+         function 1 is its HDMI/DP audio. Get the audio address from the same
+         lspci output (usually the next line, .1).
+         ============================================================ -->
     <hostdev mode='subsystem' type='pci' managed='yes'>
       <driver name='vfio'/>
       <source>
-        <address domain='0x0000' bus='0x01' slot='0x00' function='0x0'/>
+        <address domain='0x0000' bus='0xff' slot='0x1f' function='0x0'/>
       </source>
       <address type='pci' domain='0x0000' bus='0x01' slot='0x00' function='0x0' multifunction='on'/>
     </hostdev>
     <hostdev mode='subsystem' type='pci' managed='yes'>
       <driver name='vfio'/>
       <source>
-        <address domain='0x0000' bus='0x01' slot='0x00' function='0x1'/>
+        <!-- EDIT THIS TOO: your GPU's audio function (same bus/slot, function 1). -->
+        <address domain='0x0000' bus='0xff' slot='0x1f' function='0x1'/>
       </source>
       <address type='pci' domain='0x0000' bus='0x01' slot='0x00' function='0x1'/>
     </hostdev>
@@ -1127,7 +1090,46 @@ elements are the fix from §9.
          NullMoth driver was tested on). -->
     <qemu:arg value='-smbios'/>
     <qemu:arg value='type=2'/>
-    <!-- THE KEY FIX. Bridge-level ACPI hotplug OFF. With this property on
+    <!-- ============================================================
+         THE KEY FIX. If you take one thing from this file, take this property.
+         ============================================================
+
+         Bridge-level ACPI hotplug OFF.
+
+         WHY, in one paragraph: with this property ON (QEMU's default) the PCIe
+         root ports advertise ZERO-SIZE `ranges` : all three window descriptors
+         (32-bit MMIO, 64-bit prefetchable, I/O) report a size of 0. macOS reads
+         those windows from firmware and believes them, so it assigns the device
+         behind the port no address space at all. The card is visible in PCI
+         config space : macOS reads its vendor/device id and bus/device/function
+         : but gets no BAR, no interrupt (IRQ 0) and no IORegistry node, so the
+         driver never attaches. Turning this property off makes the root ports
+         advertise real windows, macOS resources the device normally, and the
+         driver's placeLargeBar1() finally has the parent bridge it requires to
+         place a large BAR itself.
+
+         Linux is unaffected either way : it ignores `ranges` and programs the
+         bridge's window registers directly. That asymmetry is what proved the
+         fault was macOS-side rather than QEMU's: on identical QEMU config, Linux
+         gave the same card behind the same root port IRQ 11 and every BAR,
+         including one above 4G.
+
+         Full details, the measurements, and everything that does NOT work are in
+         the README (section: the critical QEMU setting).
+
+         VERIFY IT REACHED QEMU. libvirt silently drops attributes it does not
+         understand, and a dropped setting is indistinguishable from one that
+         does not work. After starting the domain:
+
+             P=$(pgrep -f "guest=macos" | head -1)
+             tr '\0' '\n' < /proc/$P/cmdline | grep -c acpi-pci-hotplug-with-bridge-support
+
+         That must print 1 or more. If it prints 0, this property did not reach
+         QEMU and nothing downstream will work.
+
+         OSX-KVM carries exactly this line (OpenCore-Boot.sh:47) commented out.
+         Per-root-port hotplug='off' attributes on the controllers above do NOT
+         reach it : libvirt accepts them and silently discards them. --> With this property on
          (QEMU's default) QEMU advertises ACPI hotplug slots for the PCIe
          bridges, and macOS 15, which enumerates PCIe through ACPI,
          IOPCIHPType = 0x21, defers enumeration of anything behind a root port
@@ -1149,7 +1151,7 @@ elements are the fix from §9.
 
 Identical except: no PCI hostdevs, no USB hostdevs, an emulated GPU so the installer is
 visible on the SPICE console, and the **recovery media attached as `sdc`** — without that
-last one this file cannot actually install anything.
+last one this file cannot install anything.
 
 ```xml
 <domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
@@ -1476,6 +1478,32 @@ last one this file cannot actually install anything.
 
 ## Appendix B — supporting files in this repo
 
+> ### ⚠️ Every script and every config here MUST be edited before it will work
+>
+> Nothing in this repository knows your hardware. **At minimum you must replace the
+> GPU's host address** (the scripts and the domain XML ship with a deliberately fake
+> one, `0xff:1f.0`, so they fail loudly rather than doing something surprising to a real
+> device), **and the paths** to your OpenCore image and macOS disk. The domain will not
+> start, and the scripts will report that they cannot find the GPU, until you do.
+
+Two sets of scripts, pick either:
+
+**The simple ones** (`scripts/gpu-to-vfio.sh`, `scripts/gpu-to-host.sh`,
+`scripts/set-bar1.sh`) — short and readable, and easy to adapt. They do the minimum:
+clear `driver_override`, unbind, resize BAR1, bind vfio-pci.
+
+**The guarded ones** (`scripts/gpu-to-vfio.guarded.sh`, `scripts/gpu-to-host.guarded.sh`,
+`scripts/gpu-vfio-status.sh`, `scripts/gpu-vfio-apply.sh`) — longer, and relatively safe
+to run because they check before they act: they refuse to unbind while anything holds the
+GPU open, they detect a GPU that is powered off, they verify the binding afterwards, and
+they offer a "schedule this for your next logout" path for the case where the GPU is
+driving your desktop. If you are going to run this on a machine you care about, start
+with these.
+
+Both sets run on the host, need root, and take the BAR bit index as an argument.
+
+
+
 | file | where it runs | what it does |
 |---|---|---|
 | `config/macos-install.xml` | host | stage 1: install macOS, no passthrough, SPICE display |
@@ -1515,7 +1543,1204 @@ cache; and publish `build-nvrm.sh` / the Darwin port of the open-gpu-kernel-modu
 
 Inline so this file stands alone. The same files are in `scripts/` and `tools/`.
 
-### `scripts/gpu-to-vfio.sh` — Release the GPU from its host driver, size BAR1, hand it to vfio-pci
+**All of them must be edited for your hardware** — see the warning in Appendix B.
+
+### `scripts/gpu-to-vfio.guarded.sh` — GUARDED host script: release the GPU, set BAR1, bind vfio-pci
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+# ============================================================================
+#  REVIEW BEFORE RUNNING. This script detects the GPU itself (via lspci), but it
+#  still assumes things about your machine:
+#
+#    * the GPU is the first NVIDIA 3D controller lspci reports -- if you have
+#      more than one, set GPU_BDF below explicitly;
+#    * the BAR sizes at the bottom of this block match the card this was written
+#      for. Check what yours advertises:  lspci -vv | grep -A2 "Resizable BAR"
+#    * it may reference host services (e.g. a GPU power manager) that do not
+#      exist on your system. Those guards degrade to no-ops, but read them.
+#
+#  It will NOT silently damage anything: if it cannot find the GPU it stops.
+#  Still, read it before running it as root.
+# ============================================================================
+
+red()    { echo -e "\e[31m$*\e[0m" >&2; }
+green()  { echo -e "\e[32m$*\e[0m" >&2; }
+yellow() { echo -e "\e[33m$*\e[0m" >&2; }
+info()   { echo -e "\e[34m[INFO]\e[0m  $*" >&2; }
+ok()     { echo -e "\e[32m[OK]\e[0m    $*" >&2; }
+fail()   { echo -e "\e[31m[FAIL]\e[0m  $*" >&2; }
+warn()   { echo -e "\e[33m[WARN]\e[0m  $*" >&2; }
+
+if [ "$EUID" -ne 0 ]; then exec sudo "$0" "$@"; fi
+
+SILENT=false
+case "${1:-}" in -s) SILENT=true; shift;; esac
+
+# ── Resizable BAR sizing ─────────────────────────────────────
+# BAR1 on the dGPU is a Resizable BAR, and its SIZE decides the NullMoth
+# driver's VRAM budget:
+#
+#     budget = (fBarLen >= 4 GiB) ? fBarLen / 2 : 192 MB      (nvrm-fb.cpp)
+#
+# so a small BAR caps the driver at 192 MB no matter how much VRAM the card
+# has. Set it as large as the card advertises: 16 GiB gives an 8 GiB budget.
+#
+# resource1_resize takes a BIT INDEX, not a byte count:
+#   0=1MB 1=2MB 2=4MB ... 10=1GiB 11=2GiB 12=4GiB 13=8GiB 14=16GiB
+# so the size in bytes is 2^(idx+20).
+#
+# HISTORY — this used to be 8 (256 MB), with a long comment claiming 256 MB
+# was "the value macOS requires" and that a larger BAR made macOS refuse the
+# assignment and the driver fail outright. Those measurements were real but
+# they were a SYMPTOM, not a requirement: they were taken with the GPU on
+# guest bus 0x00, where placeLargeBar1() has no parent bridge to reprogram
+# and logs "bar1: parent root port not found", leaving macOS's own (small)
+# assignment as the only option.
+#
+# The fix is to put the GPU BEHIND A PCIE ROOT PORT (guest bus 0x01) and stop
+# QEMU advertising ACPI hotplug for PCI bridges:
+#
+#     -global ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off
+#
+# Without that property macOS assigns a root-port device no resources at all
+# (the root ports advertise zero-size `ranges`). With it, macOS resources the
+# card, the driver places its own 16 GiB BAR, and the budget goes 192 MB ->
+# 8 GiB. MEASURED: bar1@0x14:0x1000000000+0x400000000, budget 8589934592.
+#
+# Do not lower this back to 256 MB. A small BAR is not "what macOS requires";
+# it is what a VM that cannot present the normal Mac topology is stuck with.
+BAR_IDX_VFIO=14   # 16 GiB — maximum this card advertises; gives an 8 GiB budget
+BAR_IDX_HOST=14   # 16 GiB — the same; kept separate as they need not match
+
+# BAR1 size in bytes for a BDF (0 if unassigned or no resizable BAR1)
+bar1_bytes() {
+    local bdf="$1" vals
+    vals=$(sed -n '2p' "/sys/bus/pci/devices/$bdf/resource" 2>/dev/null) || { echo 0; return; }
+    # shellcheck disable=SC2086
+    set -- $vals
+    [ -n "${1:-}" ] && [ -n "${2:-}" ] || { echo 0; return; }
+    local n=$(( $2 - $1 + 1 ))
+    [ "$n" -gt 0 ] 2>/dev/null && echo "$n" || echo 0
+}
+
+# Program BAR1 to bit-index $2. The device MUST be unbound or this is EBUSY.
+set_bar1() {
+    local dev="$1" idx="$2" want="$3"
+    local f="/sys/bus/pci/devices/$dev/resource1_resize"
+    [ -e "$f" ] || return 0            # no resizable BAR1 (e.g. audio fn)
+    local want_b=$(( 1 << (idx + 20) ))
+    local before after
+    before=$(bar1_bytes "$dev")
+    if [ "$before" = "$want_b" ]; then
+        ok "$dev BAR1 already $want ($(( before / 1048576 )) MiB)"
+        return 0
+    fi
+    if ! printf '%d\n' "$idx" > "$f" 2>/dev/null; then
+        warn "$dev could not set BAR1 to $want (device must be unbound)"
+        return 0
+    fi
+    after=$(bar1_bytes "$dev")
+    ok "$dev BAR1 $(( before / 1048576 )) MiB -> $(( after / 1048576 )) MiB ($want)"
+}
+
+# Ensure BAR1 is at the VM size, releasing the device if it is bound.
+ensure_bar1_for_vfio() {
+    local dev="$1"
+    local f="/sys/bus/pci/devices/$dev/resource1_resize"
+    [ -e "$f" ] || return 0
+    [ "$(bar1_bytes "$dev")" = "$(( 1 << (BAR_IDX_VFIO + 20) ))" ] && return 0
+    local drv
+    drv=$(readlink "/sys/bus/pci/devices/$dev/driver" 2>/dev/null | xargs basename 2>/dev/null || echo none)
+    echo "" > "/sys/bus/pci/devices/$dev/driver_override" 2>/dev/null || true
+    if [ "$drv" != "none" ]; then
+        echo "$dev" > "/sys/bus/pci/drivers/$drv/unbind" 2>/dev/null || true
+        sleep 0.5
+    fi
+    set_bar1 "$dev" "$BAR_IDX_VFIO" "16 GiB for passthrough"
+    echo "vfio-pci" > "/sys/bus/pci/devices/$dev/driver_override" 2>/dev/null || true
+    echo "$dev" > /sys/bus/pci/drivers_probe 2>/dev/null || true
+}
+
+# ── Cardwire: pause the GPU manager for the handoff ──────────
+# cardwired holds /dev/nvidia* open for its eBPF LSM hooks, and that LSM
+# answers ENOENT on GPU device/sysfs paths. Left running it both pins the
+# nvidia modules (rmmod fails) and hides the real holders from gpu_holders
+# below — the two things this script depends on. The EXIT trap resumes it
+# only if the GPU ends up back on the nvidia driver: on vfio-pci there is
+# nothing for cardwire to manage.
+if systemctl is-active --quiet cardwired.service 2>/dev/null; then
+    systemctl stop cardwired.service 2>/dev/null \
+        && ok "cardwired paused for GPU handoff" \
+        || warn "could not stop cardwired — module unload may fail"
+fi
+cardwire_resume() {
+    local drv="none"
+    if [ -n "${GPU_BDF:-}" ]; then
+        drv=$(readlink "/sys/bus/pci/devices/$GPU_BDF/driver" 2>/dev/null | xargs basename 2>/dev/null || echo none)
+    fi
+    [ "$drv" = "nvidia" ] || return 0
+    systemctl is-enabled --quiet cardwired.service 2>/dev/null || return 0
+    systemctl is-active --quiet cardwired.service 2>/dev/null && return 0
+    systemctl start cardwired.service 2>/dev/null && ok "cardwired resumed"
+    return 0
+}
+trap cardwire_resume EXIT
+
+# ── GPU-holder helpers (used by the force path) ──────────────
+# System daemons are tolerated here — they are stopped via systemd later.
+# cardwired is paused above; it is never a GPU holder to act on.
+IGNORE_PROCS="nvidia-powerd|nvidia-persistenced|cardwired"
+
+# List live (non-zombie) PIDs holding NVIDIA devices
+gpu_holders() {
+    local pids=""
+    for nvdev in /dev/nvidia*; do
+        [ -e "$nvdev" ] || continue
+        pids="$pids $(fuser "$nvdev" 2>/dev/null || true)"
+    done
+    for dev in "${ALL_DEVS[@]}"; do
+        pids="$pids $(fuser "/sys/bus/pci/devices/$dev" 2>/dev/null || true)"
+    done
+    local out=""
+    for pid in $pids; do
+        pname=$(ps -p "$pid" -o comm= 2>/dev/null || echo "unknown")
+        if echo "$pname" | grep -qE "$IGNORE_PROCS"; then continue; fi
+        state=$(ps -o stat= -p "$pid" 2>/dev/null || true)
+        case "$state" in *Z*|*z*) continue;; esac
+        out="$out $pid"
+    done
+    echo "$out"
+}
+
+# ── Discover / wake NVIDIA dGPU ──────────────────────────────
+ASUS_DGPU_DISABLE=/sys/devices/platform/asus-nb-wmi/dgpu_disable
+info "Discovering NVIDIA dGPU..."
+
+GPU_BDF=$(lspci -D -d 10DE::0300 2>/dev/null | awk 'NR==1{print $1}')
+WAS_OFF=false
+if [ -z "$GPU_BDF" ]; then
+    info "dGPU is off — powering on for VFIO passthrough..."
+
+    # Clear ASUS dgpu_disable if set
+    if [ -f "$ASUS_DGPU_DISABLE" ] && grep -q 1 "$ASUS_DGPU_DISABLE" 2>/dev/null; then
+        info "Clearing dgpu_disable..."
+        tries=0
+        while :; do
+            if echo 0 > "$ASUS_DGPU_DISABLE" 2>/dev/null; then
+                sleep 0.1
+                if grep -q 0 "$ASUS_DGPU_DISABLE" 2>/dev/null; then
+                    ok "dgpu_disable = 0"
+                    break
+                fi
+            fi
+            tries=$((tries + 1))
+            [ "$tries" -ge 4 ] && { fail "Could not clear dgpu_disable"; exit 1; }
+            sleep 0.5
+        done
+    fi
+
+    # Power on any slot that was off
+    for slot in /sys/bus/pci/slots/*/; do
+        [ -e "$slot/power" ] || continue
+        power=$(tr -dc '01' < "$slot/power" 2>/dev/null || true)
+        if [ "$power" = "0" ]; then
+            echo 1 > "$slot/power" 2>/dev/null || true
+        fi
+    done
+
+    # Rescan PCI bus until GPU appears
+    info "Rescanning PCI bus..."
+    for _ in $(seq 1 16); do
+        echo 1 > /sys/bus/pci/rescan 2>/dev/null || true
+        sleep 0.5
+        GPU_BDF=$(lspci -D -d 10DE::0300 2>/dev/null | awk 'NR==1{print $1}')
+        [ -n "$GPU_BDF" ] && break
+    done
+    if [ -z "$GPU_BDF" ]; then
+        red "ERROR: dGPU did not appear after power-on."
+        exit 1
+    fi
+    ok "dGPU powered on at $GPU_BDF"
+    WAS_OFF=true
+fi
+GPU_BUSDEV="${GPU_BDF%.*}"
+
+# Gather all NVIDIA functions on this device and their drivers
+ALL_DEVS=()
+ALL_DRIVERS=()
+while IFS= read -r line; do
+    bdf=$(echo "$line" | awk '{print $1}')
+    drv=$(readlink "/sys/bus/pci/devices/$bdf/driver" 2>/dev/null | xargs basename 2>/dev/null || echo "none")
+    ALL_DEVS+=("$bdf")
+    ALL_DRIVERS+=("$drv")
+done < <(lspci -D -s "$GPU_BUSDEV".* -d 10DE: 2>/dev/null)
+
+if [ ${#ALL_DEVS[@]} -eq 0 ]; then
+    red "ERROR: No NVIDIA functions found on device $GPU_BUSDEV"
+    exit 1
+fi
+
+# ── Show summary ─────────────────────────────────────────────
+if ! $SILENT; then
+echo ""
+info "Found ${#ALL_DEVS[@]} NVIDIA device function(s):"
+for i in "${!ALL_DEVS[@]}"; do
+    desc=$(lspci -s "${ALL_DEVS[$i]}" 2>/dev/null | cut -d' ' -f2-)
+    iommu=$(basename "$(readlink "/sys/bus/pci/devices/${ALL_DEVS[$i]}/iommu_group" 2>/dev/null)" 2>/dev/null || echo "?")
+    printf "  %-13s  driver: %-10s  iommu_group: %-3s  %s\n" \
+        "${ALL_DEVS[$i]}" "${ALL_DRIVERS[$i]}" "$iommu" "$desc"
+done
+fi
+
+# ── Check: already all on vfio-pci? ──────────────────────────
+all_vfio=true
+for drv in "${ALL_DRIVERS[@]}"; do
+    [ "$drv" != "vfio-pci" ] && all_vfio=false
+done
+if $all_vfio; then
+    # Already bound — but BAR1 may still be at the host size (e.g. after a
+    # gpu-to-host that was interrupted), which breaks passthrough. Enforce it.
+    for dev in "${ALL_DEVS[@]}"; do
+        ensure_bar1_for_vfio "$dev"
+    done
+    if $SILENT; then exit 0; fi
+    green ""
+    green "All NVIDIA functions are already bound to vfio-pci."
+    exit 0
+fi
+
+# ── GPU was off: skip all checks, go straight to binding ────
+if ! $WAS_OFF; then
+
+# ── Check: GPU function on something unexpected? ─────────────
+mixed=false
+for i in "${!ALL_DEVS[@]}"; do
+    dev="${ALL_DEVS[$i]}"
+    drv="${ALL_DRIVERS[$i]}"
+    # Only the GPU function (class 03) matters for this check
+    class=$(cat "/sys/bus/pci/devices/$dev/class" 2>/dev/null | cut -c3-4 || true)
+    if [ "$class" = "03" ] && [ "$drv" != "nvidia" ] && [ "$drv" != "vfio-pci" ] && [ "$drv" != "none" ]; then
+        warn "GPU function $dev is bound to unexpected driver: $drv"
+        mixed=true
+    fi
+done
+if $mixed; then
+    yellow "GPU in unexpected state. Continuing anyway..."
+fi
+
+# ── Check for displays actively driven by NVIDIA ──────────────
+info "Checking for displays actively driven by NVIDIA GPU..."
+HAS_DISPLAY=false
+if [ -d "/sys/bus/pci/devices/$GPU_BDF/drm" ]; then
+    for card in /sys/bus/pci/devices/$GPU_BDF/drm/card*; do
+        [ -d "$card" ] || continue
+        for conn_dir in "$card"/card*-*; do
+            [ -d "$conn_dir" ] || continue
+            status=$(cat "$conn_dir/status" 2>/dev/null || echo "unknown")
+            [ "$status" != "connected" ] && continue
+            # Verify the connector actually drives a display (enabled + modes)
+            enabled=$(cat "$conn_dir/enabled" 2>/dev/null || echo "disabled")
+            modes=$(cat "$conn_dir/modes" 2>/dev/null | head -1 || true)
+            if [ "$enabled" = "enabled" ] && [ -n "$modes" ]; then
+                conn_name=$(basename "$conn_dir")
+                yellow "Display $conn_name is ACTIVE on the NVIDIA GPU (mode: $modes)"
+                HAS_DISPLAY=true
+            else
+                conn_name=$(basename "$conn_dir")
+                info "Connector $conn_name reports connected but is not enabled — skipping"
+            fi
+        done
+    done
+fi
+$HAS_DISPLAY && $SILENT && { yellow "Display(s) actively driven by NVIDIA GPU"; exit 1; }
+$HAS_DISPLAY && ! $SILENT && yellow "Moving the GPU to VFIO will kill active displays immediately."
+
+# ── Check for processes using nvidia devices ─────────────────
+info "Checking for processes using NVIDIA devices..."
+has_procs=false
+for nvdev in /dev/nvidia*; do
+    [ -e "$nvdev" ] || continue
+    pids=$(fuser "$nvdev" 2>/dev/null || true)
+    if [ -n "$pids" ]; then
+        shown=false
+        for pid in $pids; do
+            pname=$(ps -p "$pid" -o comm= 2>/dev/null || echo "unknown")
+            if echo "$pname" | grep -qE "$IGNORE_PROCS"; then continue; fi
+            if ! $shown; then echo ""; yellow "Processes using $nvdev:"; shown=true; fi
+            has_procs=true
+            echo "  PID $pid  ($pname)"
+        done
+    fi
+done
+for dev in "${ALL_DEVS[@]}"; do
+    pids=$(fuser "/sys/bus/pci/devices/$dev" 2>/dev/null || true)
+    if [ -n "$pids" ]; then
+        shown=false
+        for pid in $pids; do
+            pname=$(ps -p "$pid" -o comm= 2>/dev/null || echo "unknown")
+            if echo "$pname" | grep -qE "$IGNORE_PROCS"; then continue; fi
+            if ! $shown; then echo ""; yellow "Processes holding $dev:"; shown=true; fi
+            has_procs=true
+            echo "  PID $pid  ($pname)"
+        done
+    fi
+done
+
+# ── Check for active graphical sessions ──────────────────────
+HAS_SEAT=false
+if command -v loginctl &>/dev/null; then
+    if loginctl list-sessions --no-legend 2>/dev/null | grep -v "tty" | grep -q "seat0"; then
+        HAS_SEAT=true
+    fi
+fi
+
+if ! $has_procs && ! $HAS_DISPLAY && ! $HAS_SEAT; then
+    $SILENT || ok "No active users, displays, or processes on the NVIDIA GPU."
+fi
+
+# ── Blocking: ask user how to proceed ────────────────────────
+if $has_procs || $HAS_DISPLAY || $HAS_SEAT; then
+    if $SILENT; then
+        $has_procs && yellow "Processes holding NVIDIA devices"
+        $HAS_DISPLAY && yellow "Display(s) actively driven by NVIDIA GPU"
+        $HAS_SEAT && yellow "Active graphical sessions"
+        exit 1
+    fi
+    echo ""
+    yellow "──────────────────────────────────────────────────────"
+    yellow "  The NVIDIA GPU is currently in use by the host."
+    yellow "  Binding it to vfio-pci now will disrupt your desktop."
+    yellow "──────────────────────────────────────────────────────"
+    echo ""
+    echo "  [f] Force  — kill processes & unbind immediately (risky)"
+    echo "  [l] Logout — schedule binding; log out, then run gpu-vfio-apply"
+    echo "  [c] Cancel — abort"
+    echo ""
+    read -rp "Choose [f/l/c]: " answer
+    case "$answer" in
+        [fF])
+            warn "Forcing GPU unbind — this may crash your desktop."
+
+            # ── Kill everything holding the GPU (SIGKILL) ──────
+            info "Killing processes using the GPU..."
+            for nvdev in /dev/nvidia*; do
+                [ -e "$nvdev" ] || continue
+                fuser -k "$nvdev" 2>/dev/null || true
+            done
+            for dev in "${ALL_DEVS[@]}"; do
+                fuser -k "/sys/bus/pci/devices/$dev" 2>/dev/null || true
+            done
+
+            # ── Wait for the GPU to be fully released ───────────
+            info "Waiting for processes to release the GPU..."
+            waited=0
+            escalated=false
+            while :; do
+                remaining=$(gpu_holders)
+                if [ -z "$remaining" ]; then
+                    ok "GPU released."
+                    break
+                fi
+                # Grace period, then re-kill any survivors with SIGKILL
+                if ! $escalated && [ "$waited" -ge 6 ]; then
+                    escalated=true
+                    warn "Escalating — SIGKILL to survivors: $remaining"
+                    kill -9 $remaining 2>/dev/null || true
+                fi
+                if [ "$waited" -ge 30 ]; then   # 30 × 0.5s = 15s
+                    red "ERROR: processes still hold the GPU after 15s:"
+                    for pid in $remaining; do
+                        red "  PID $pid  ($(ps -p "$pid" -o comm= 2>/dev/null || echo unknown))"
+                    done
+                    red ""
+                    red "Unbinding now would hang the kernel (nvidia os_delay)."
+                    red "Aborting — log out of your desktop and use the [l] Logout path instead."
+                    exit 1
+                fi
+                sleep 0.5
+                waited=$((waited + 1))
+            done
+            ;;
+        [lL])
+            mkdir -p /etc/gpu-switch
+            echo "vfio" > /etc/gpu-switch/pending
+            green ""
+            green "GPU binding to vfio-pci scheduled for next logout."
+            echo ""
+            yellow "Steps to complete:"
+            yellow "  1. Log out of your desktop session"
+            yellow "  2. Press Ctrl+Alt+F2 to switch to a VT"
+            yellow "  3. Log in as root"
+            yellow "  4. Run:  gpu-vfio-apply"
+            echo ""
+            exit 0
+            ;;
+        *)
+            red "Aborted."
+            exit 1
+            ;;
+    esac
+fi
+
+# ── Stop NVIDIA services ─────────────────────────────────────
+info "Stopping NVIDIA services..."
+systemctl stop nvidia-persistenced.service 2>/dev/null && ok "nvidia-persistenced stopped" || true
+systemctl stop nvidia-powerd.service 2>/dev/null && ok "nvidia-powerd stopped" || true
+
+# ── Remove NVIDIA modules ────────────────────────────────────
+info "Unloading NVIDIA kernel modules..."
+for mod in nvidia_drm nvidia_modeset nvidia_uvm nvidia nvidia_wmi_ec_backlight; do
+    if lsmod | grep -q "^$mod "; then
+        if rmmod "$mod" 2>/dev/null; then
+            ok "Removed module: $mod"
+        else
+            warn "Could not remove module: $mod (may be in use — force with rmmod -f if needed)"
+        fi
+    fi
+done
+sleep 0.5
+
+fi   # end of $WAS_OFF guard
+
+# ── Bind to vfio-pci ─────────────────────────────────────────
+info "Binding NVIDIA functions to vfio-pci..."
+
+# Ensure vfio-pci knows about these devices
+for dev in "${ALL_DEVS[@]}"; do
+    pci_id=$(lspci -ns "$dev" 2>/dev/null | awk '{print $3}')
+    if [ -n "$pci_id" ]; then
+        echo "$pci_id" | sed 's/:/ /' > /sys/bus/pci/drivers/vfio-pci/new_id 2>/dev/null || true
+    fi
+done
+
+for dev in "${ALL_DEVS[@]}"; do
+    info "Processing $dev..."
+
+    # Release the device FIRST. driver_override must be cleared before the
+    # unbind: while it names a driver the kernel re-binds the device
+    # immediately, the unbind silently fails, and the BAR resize below then
+    # returns EBUSY.
+    echo "" > "/sys/bus/pci/devices/$dev/driver_override" 2>/dev/null || true
+
+    # Unbind from current driver
+    cur_drv=$(readlink "/sys/bus/pci/devices/$dev/driver" 2>/dev/null | xargs basename 2>/dev/null || echo "")
+    if [ -n "$cur_drv" ]; then
+        # Final safety check: unbinding a busy nvidia driver hangs the kernel
+        if [ "$cur_drv" = "nvidia" ]; then
+            remaining=$(gpu_holders)
+            if [ -n "$remaining" ]; then
+                fail "Processes still hold the GPU — aborting to avoid a kernel hang:"
+                for pid in $remaining; do
+                    fail "  PID $pid  ($(ps -p "$pid" -o comm= 2>/dev/null || echo unknown))"
+                done
+                fail ""
+                fail "Log out of your desktop, then run:  gpu-vfio-apply"
+                exit 1
+            fi
+        fi
+        echo "$dev" > "/sys/bus/pci/drivers/$cur_drv/unbind" 2>/dev/null || true
+        sleep 0.5
+    fi
+
+    # BAR1 must be programmed while the device is unbound
+    set_bar1 "$dev" "$BAR_IDX_VFIO" "16 GiB for passthrough"
+
+    # Pin to vfio-pci and probe
+    if ! echo "vfio-pci" > "/sys/bus/pci/devices/$dev/driver_override" 2>/dev/null; then
+        fail "Could not set driver_override for $dev"
+        continue
+    fi
+    echo "$dev" > /sys/bus/pci/drivers_probe 2>/dev/null || true
+done
+
+sleep 1
+
+# ── Verify ───────────────────────────────────────────────────
+echo ""
+info "Verifying binding..."
+all_ok=true
+for dev in "${ALL_DEVS[@]}"; do
+    cur_drv=$(readlink "/sys/bus/pci/devices/$dev/driver" 2>/dev/null | xargs basename 2>/dev/null || echo "none")
+    if [ "$cur_drv" = "vfio-pci" ]; then
+        ok "$dev  →  vfio-pci"
+    else
+        fail "$dev  →  $cur_drv  (expected vfio-pci)"
+        all_ok=false
+    fi
+done
+
+echo ""
+if $all_ok; then
+    green "All NVIDIA functions successfully bound to vfio-pci."
+    green "The GPU is ready for VM passthrough."
+    echo ""
+    yellow "To return the GPU to the host later, run:  gpu-to-host"
+else
+    red "Some devices failed to bind. Check dmesg for details."
+    exit 1
+fi
+```
+
+### `scripts/gpu-to-host.guarded.sh` — GUARDED host script: give the GPU back
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+# ============================================================================
+#  REVIEW BEFORE RUNNING. This script detects the GPU itself (via lspci), but it
+#  still assumes things about your machine:
+#
+#    * the GPU is the first NVIDIA 3D controller lspci reports -- if you have
+#      more than one, set GPU_BDF below explicitly;
+#    * the BAR sizes at the bottom of this block match the card this was written
+#      for. Check what yours advertises:  lspci -vv | grep -A2 "Resizable BAR"
+#    * it may reference host services (e.g. a GPU power manager) that do not
+#      exist on your system. Those guards degrade to no-ops, but read them.
+#
+#  It will NOT silently damage anything: if it cannot find the GPU it stops.
+#  Still, read it before running it as root.
+# ============================================================================
+
+red()    { echo -e "\e[31m$*\e[0m" >&2; }
+green()  { echo -e "\e[32m$*\e[0m" >&2; }
+yellow() { echo -e "\e[33m$*\e[0m" >&2; }
+info()   { echo -e "\e[34m[INFO]\e[0m  $*" >&2; }
+ok()     { echo -e "\e[32m[OK]\e[0m    $*" >&2; }
+fail()   { echo -e "\e[31m[FAIL]\e[0m  $*" >&2; }
+warn()   { echo -e "\e[33m[WARN]\e[0m  $*" >&2; }
+
+if [ "$EUID" -ne 0 ]; then exec sudo "$0" "$@"; fi
+
+SILENT=false
+case "${1:-}" in -s) SILENT=true; shift;; esac
+
+# ── Cardwire: pause the GPU manager for the handoff ──────────
+# Same as gpu-to-vfio: while cardwired runs, its LSM hides the GPU paths
+# this script probes. Resumed by the EXIT trap when the GPU is back on
+# nvidia (gpu-on handles the "GPU was powered off" path via exec below).
+if systemctl is-active --quiet cardwired.service 2>/dev/null; then
+    systemctl stop cardwired.service 2>/dev/null \
+        && ok "cardwired paused for GPU handoff" \
+        || warn "could not stop cardwired — binding may misbehave"
+fi
+cardwire_resume() {
+    local drv="none"
+    if [ -n "${GPU_BDF:-}" ]; then
+        drv=$(readlink "/sys/bus/pci/devices/$GPU_BDF/driver" 2>/dev/null | xargs basename 2>/dev/null || echo none)
+    fi
+    [ "$drv" = "nvidia" ] || return 0
+    systemctl is-enabled --quiet cardwired.service 2>/dev/null || return 0
+    systemctl is-active --quiet cardwired.service 2>/dev/null && return 0
+    systemctl start cardwired.service 2>/dev/null && ok "cardwired resumed"
+    return 0
+}
+trap cardwire_resume EXIT
+
+# ── Discover / wake NVIDIA dGPU ──────────────────────────────
+info "Discovering NVIDIA dGPU..."
+
+GPU_BDF=$(lspci -D -d 10DE::0300 2>/dev/null | awk 'NR==1{print $1}')
+if [ -z "$GPU_BDF" ]; then
+    info "dGPU is off — running gpu-on to power it on..."
+    exec gpu-on
+fi
+GPU_BUSDEV="${GPU_BDF%.*}"
+
+ALL_DEVS=()
+ALL_DRIVERS=()
+IOMMU_GROUPS=()
+while IFS= read -r line; do
+    bdf=$(echo "$line" | awk '{print $1}')
+    drv=$(readlink "/sys/bus/pci/devices/$bdf/driver" 2>/dev/null | xargs basename 2>/dev/null || echo "none")
+    iommu=$(basename "$(readlink "/sys/bus/pci/devices/$bdf/iommu_group" 2>/dev/null)" 2>/dev/null || echo "?")
+    ALL_DEVS+=("$bdf")
+    ALL_DRIVERS+=("$drv")
+    IOMMU_GROUPS+=("$iommu")
+done < <(lspci -D -s "$GPU_BUSDEV".* -d 10DE: 2>/dev/null)
+
+if [ ${#ALL_DEVS[@]} -eq 0 ]; then
+    red "ERROR: No NVIDIA functions found on device $GPU_BUSDEV"
+    exit 1
+fi
+
+# ── Show summary ─────────────────────────────────────────────
+echo ""
+info "Found ${#ALL_DEVS[@]} NVIDIA device function(s):"
+for i in "${!ALL_DEVS[@]}"; do
+    desc=$(lspci -s "${ALL_DEVS[$i]}" 2>/dev/null | cut -d' ' -f2-)
+    printf "  %-13s  driver: %-10s  iommu_group: %-3s  %s\n" \
+        "${ALL_DEVS[$i]}" "${ALL_DRIVERS[$i]}" "${IOMMU_GROUPS[$i]}" "$desc"
+done
+
+# ── Check: already all on host drivers? ───────────────────────
+all_host=true
+for i in "${!ALL_DEVS[@]}"; do
+    drv="${ALL_DRIVERS[$i]}"
+    dev="${ALL_DEVS[$i]}"
+    if [ "$drv" = "vfio-pci" ] || [ "$drv" = "none" ]; then
+        # Check if this is the GPU itself — it MUST be on nvidia
+        class=$(cat "/sys/bus/pci/devices/$dev/class" 2>/dev/null | cut -c3-4 || true)
+        if [ "$class" = "03" ]; then
+            yellow "GPU function $dev is not on nvidia (driver: $drv)"
+            all_host=false
+        elif [ "$drv" = "vfio-pci" ]; then
+            all_host=false
+        fi
+    fi
+done
+if $all_host; then
+    if $SILENT; then exit 0; fi
+    green ""
+    green "All NVIDIA functions are on host drivers (GPU on nvidia)."
+    info "Verifying NVIDIA services..."
+    systemctl is-active --quiet nvidia-persistenced.service 2>/dev/null \
+        || { systemctl start nvidia-persistenced.service 2>/dev/null && ok "nvidia-persistenced started (was stopped)"; }
+    systemctl is-active --quiet nvidia-powerd.service 2>/dev/null \
+        || { systemctl start nvidia-powerd.service 2>/dev/null && ok "nvidia-powerd started (was stopped)"; }
+    ok "NVIDIA services are running."
+    if [ -e /dev/nvidia0 ]; then
+        ok "/dev/nvidia0 present"
+    fi
+    exit 0
+fi
+
+# ── Check: VM using the vfio device? ─────────────────────────
+info "Checking if a running VM is using this GPU..."
+vm_active=false
+for iommu in $(printf '%s\n' "${IOMMU_GROUPS[@]}" | sort -u); do
+    if [ -e "/dev/vfio/$iommu" ]; then
+        if fuser "/dev/vfio/$iommu" >/dev/null 2>&1; then
+            vm_active=true
+            red "ERROR: IOMMU group $iommu is in use by a running VM!"
+            red "  /dev/vfio/$iommu is held by:"
+            fuser -v "/dev/vfio/$iommu" 2>&1 | sed 's/^/  /' >&2
+        fi
+    fi
+done
+if $vm_active; then
+    red ""
+    red "Aborting: shut down the VM first, then re-run this script."
+    exit 1
+fi
+ok "No VM is using the GPU."
+
+# ── Ensure nvidia modules are loaded ─────────────────────────
+info "Ensuring NVIDIA kernel modules are loaded..."
+for mod in nvidia nvidia_modeset nvidia_uvm nvidia_drm; do
+    if ! lsmod | grep -q "^$mod "; then
+        modprobe "$mod" 2>/dev/null && ok "Loaded module: $mod" || warn "Could not load $mod (will try after binding)"
+    else
+        ok "Module $mod already loaded"
+    fi
+done
+
+# ── Resizable BAR sizing (mirror of gpu-to-vfio) ─────────────
+# Keep BAR1 as large as the card advertises for passthrough: the NullMoth
+# driver's VRAM budget is fBarLen/2, so a big BAR is the point (16 GiB ->
+# 8 GiB budget). resource1_resize takes a BIT INDEX:
+# 8=256MiB, 12=4GiB, 13=8GiB, 14=16GiB.
+#
+# HISTORY: this used to be 8 (256 MB), on the belief that macOS would not
+# assign a larger Resizable BAR. That was a symptom of the GPU being on bus
+# 0x00 where the driver had no parent root port; with the GPU behind a PCIe
+# root port and -global ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off,
+# a 16 GiB BAR is assigned and placed by the driver itself.
+BAR_IDX_VFIO=14   # 16 GiB — must match gpu-to-vfio; see the note there
+BAR_IDX_HOST=14   # 16 GiB — the maximum this card advertises
+
+bar1_bytes() {
+    local bdf="$1" vals
+    vals=$(sed -n '2p' "/sys/bus/pci/devices/$bdf/resource" 2>/dev/null) || { echo 0; return; }
+    # shellcheck disable=SC2086
+    set -- $vals
+    [ -n "${1:-}" ] && [ -n "${2:-}" ] || { echo 0; return; }
+    local n=$(( $2 - $1 + 1 ))
+    [ "$n" -gt 0 ] 2>/dev/null && echo "$n" || echo 0
+}
+
+# Program BAR1 to bit-index $2. The device MUST be unbound or this is EBUSY.
+set_bar1() {
+    local dev="$1" idx="$2" want="$3"
+    local f="/sys/bus/pci/devices/$dev/resource1_resize"
+    [ -e "$f" ] || return 0            # no resizable BAR1 (e.g. audio fn)
+    local want_b=$(( 1 << (idx + 20) ))
+    local before after
+    before=$(bar1_bytes "$dev")
+    if [ "$before" = "$want_b" ]; then
+        ok "$dev BAR1 already $want ($(( before / 1048576 )) MiB)"
+        return 0
+    fi
+    if ! printf '%d\n' "$idx" > "$f" 2>/dev/null; then
+        warn "$dev could not set BAR1 to $want (device must be unbound)"
+        return 0
+    fi
+    after=$(bar1_bytes "$dev")
+    ok "$dev BAR1 $(( before / 1048576 )) MiB -> $(( after / 1048576 )) MiB ($want)"
+}
+
+# ── Clear driver_override, unbind from vfio-pci, re-probe ────
+info "Returning GPU to the nvidia host driver..."
+
+# Remove the PCI IDs that gpu-to-vfio added to vfio-pci's new_id
+for dev in "${ALL_DEVS[@]}"; do
+    pci_id=$(lspci -ns "$dev" 2>/dev/null | awk '{print $3}')
+    if [ -n "$pci_id" ]; then
+        echo "$pci_id" | sed 's/:/ /' > /sys/bus/pci/drivers/vfio-pci/remove_id 2>/dev/null || true
+    fi
+done
+
+for dev in "${ALL_DEVS[@]}"; do
+    info "Processing $dev..."
+
+    # Clear driver_override
+    echo "" > "/sys/bus/pci/devices/$dev/driver_override" 2>/dev/null || true
+
+    # Unbind from whatever driver holds it (normally vfio-pci)
+    cur_drv=$(readlink "/sys/bus/pci/devices/$dev/driver" 2>/dev/null | xargs basename 2>/dev/null || echo "")
+    if [ -n "$cur_drv" ]; then
+        echo "$dev" > "/sys/bus/pci/drivers/$cur_drv/unbind" 2>/dev/null || true
+        sleep 0.5
+    fi
+
+    # Restore BAR1 to the maximum while the device is unbound
+    set_bar1 "$dev" "$BAR_IDX_HOST" "max for host"
+
+    # Trigger re-probe
+    echo "$dev" > /sys/bus/pci/drivers_probe 2>/dev/null || true
+done
+
+sleep 2
+
+# ── If any device is still unbound, try loading nvidia and re-probe ──
+for dev in "${ALL_DEVS[@]}"; do
+    cur_drv=$(readlink "/sys/bus/pci/devices/$dev/driver" 2>/dev/null | xargs basename 2>/dev/null || echo "none")
+    if [ "$cur_drv" = "none" ]; then
+        warn "$dev has no driver. Loading nvidia modules and retrying..."
+        modprobe nvidia 2>/dev/null || true
+        modprobe nvidia_drm 2>/dev/null || true
+        sleep 0.5
+        echo "$dev" > /sys/bus/pci/drivers_probe 2>/dev/null || true
+    fi
+done
+
+sleep 1
+
+# ── Verify ───────────────────────────────────────────────────
+echo ""
+info "Verifying binding..."
+all_ok=true
+for dev in "${ALL_DEVS[@]}"; do
+    cur_drv=$(readlink "/sys/bus/pci/devices/$dev/driver" 2>/dev/null | xargs basename 2>/dev/null || echo "none")
+    class=$(cat "/sys/bus/pci/devices/$dev/class" 2>/dev/null | cut -c3-4 || true)
+    if [ "$class" = "03" ]; then
+        # GPU function: must be nvidia
+        if [ "$cur_drv" = "nvidia" ]; then
+            ok "$dev  →  nvidia"
+        else
+            fail "$dev  →  $cur_drv  (expected nvidia)"
+            all_ok=false
+        fi
+    else
+        # Audio/USB/etc: any host driver is fine
+        if [ "$cur_drv" != "vfio-pci" ] && [ "$cur_drv" != "none" ]; then
+            ok "$dev  →  $cur_drv"
+        else
+            fail "$dev  →  $cur_drv  (expected host driver)"
+            all_ok=false
+        fi
+    fi
+done
+
+# ── Start NVIDIA services ────────────────────────────────────
+info "Starting NVIDIA services..."
+systemctl start nvidia-persistenced.service 2>/dev/null && ok "nvidia-persistenced started" || true
+systemctl start nvidia-powerd.service 2>/dev/null && ok "nvidia-powerd started" || true
+
+# ── Runtime PM ───────────────────────────────────────────────
+for dev in "${ALL_DEVS[@]}"; do
+    pm_control="/sys/bus/pci/devices/$dev/power/control"
+    if [ -w "$pm_control" ]; then
+        echo "auto" > "$pm_control" 2>/dev/null || true
+    fi
+done
+
+# ── Quick health check ───────────────────────────────────────
+echo ""
+if [ -e /dev/nvidia0 ]; then
+    ok "/dev/nvidia0 exists"
+else
+    warn "/dev/nvidia0 not found — GPU may need a few seconds to initialize"
+fi
+
+if command -v nvidia-smi &>/dev/null; then
+    if nvidia-smi -L &>/dev/null 2>&1; then
+        ok "nvidia-smi reports GPU visible"
+    else
+        warn "nvidia-smi could not detect GPU (ignore if X11/Wayland is not running)"
+    fi
+fi
+
+echo ""
+if $all_ok; then
+    green "GPU successfully returned to the host nvidia driver."
+    yellow "You may need to restart your display manager if you want X11/Wayland to use it:"
+    yellow "  sudo systemctl restart display-manager.service"
+else
+    red "Some devices failed to bind to nvidia. Check dmesg for errors."
+    red "You may need to reboot."
+    exit 1
+fi
+```
+
+### `scripts/gpu-vfio-status.sh` — GUARDED host script: report current state
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+# ============================================================================
+#  REVIEW BEFORE RUNNING. This script detects the GPU itself (via lspci), but it
+#  still assumes things about your machine:
+#
+#    * the GPU is the first NVIDIA 3D controller lspci reports -- if you have
+#      more than one, set GPU_BDF below explicitly;
+#    * the BAR sizes at the bottom of this block match the card this was written
+#      for. Check what yours advertises:  lspci -vv | grep -A2 "Resizable BAR"
+#    * it may reference host services (e.g. a GPU power manager) that do not
+#      exist on your system. Those guards degrade to no-ops, but read them.
+#
+#  It will NOT silently damage anything: if it cannot find the GPU it stops.
+#  Still, read it before running it as root.
+# ============================================================================
+
+red()    { echo -e "\e[31m$*\e[0m" >&2; }
+green()  { echo -e "\e[32m$*\e[0m" >&2; }
+yellow() { echo -e "\e[33m$*\e[0m" >&2; }
+cyan()   { echo -e "\e[36m$*\e[0m" >&2; }
+info()   { echo -e "\e[34m[INFO]\e[0m  $*" >&2; }
+
+echo ""
+cyan "═════════════════════════════════════════════"
+cyan "  GPU VFIO / Host Binding Status"
+cyan "═════════════════════════════════════════════"
+echo ""
+
+# ── Resizable BAR helper ─────────────────────────────────────
+# BAR1 is resized for passthrough (4 GiB) and restored for the host
+# (16 GiB) by gpu-to-vfio / gpu-to-host. Show the current size.
+# resource1_resize uses a bit index, so size = 2^(idx+20) bytes.
+bar1_bytes() {
+    local bdf="$1" vals
+    vals=$(sed -n '2p' "/sys/bus/pci/devices/$bdf/resource" 2>/dev/null) || { echo 0; return; }
+    # shellcheck disable=SC2086
+    set -- $vals
+    [ -n "${1:-}" ] && [ -n "${2:-}" ] || { echo 0; return; }
+    local n=$(( $2 - $1 + 1 ))
+    [ "$n" -gt 0 ] 2>/dev/null && echo "$n" || echo 0
+}
+bar1_human() {
+    local b="$1"
+    if   [ "$b" -ge 1073741824 ]; then echo "$(( b / 1073741824 )) GiB"
+    elif [ "$b" -ge 1048576 ];    then echo "$(( b / 1048576 )) MiB"
+    elif [ "$b" -gt 0 ];          then echo "$(( b / 1024 )) KiB"
+    else echo "unassigned"; fi
+}
+
+# ── NVIDIA PCI devices ───────────────────────────────────────
+echo "── NVIDIA dGPU PCI Devices ──"
+echo ""
+
+FOUND=false
+while IFS= read -r line; do
+    FOUND=true
+    bdf=$(echo "$line" | awk '{print $1}')
+    desc=$(echo "$line" | cut -d' ' -f2-)
+    vendor_id=$(lspci -ns "$bdf" 2>/dev/null | awk '{print $3}' || echo "unknown")
+
+    drv=$(readlink "/sys/bus/pci/devices/$bdf/driver" 2>/dev/null | xargs basename 2>/dev/null || echo "none")
+    iommu=$(basename "$(readlink "/sys/bus/pci/devices/$bdf/iommu_group" 2>/dev/null)" 2>/dev/null || echo "?")
+
+    # Color by driver
+    case "$drv" in
+        nvidia)   drv_color="\e[32m" ;;  # green — host
+        vfio-pci) drv_color="\e[35m" ;;  # purple — VM-ready
+        *)        drv_color="\e[31m" ;;  # red — unknown
+    esac
+
+    printf "  \e[1m%-37s\e[0m  vendor:device = %s\n" "$bdf" "$vendor_id"
+    printf "    %s\n" "$desc"
+    printf "    driver:       ${drv_color}%s\e[0m\n" "$drv"
+    printf "    iommu_group:  %s\n" "$iommu"
+
+    # Resizable BAR1: 4 GiB = passthrough size, 16 GiB = host max
+    if [ -e "/sys/bus/pci/devices/$bdf/resource1_resize" ]; then
+        bar_sz=$(bar1_human "$(bar1_bytes "$bdf")")
+        case "$bar_sz" in
+            "4 GiB")  printf "    BAR1:         \e[35m%s\e[0m  (passthrough size)\n" "$bar_sz" ;;
+            "16 GiB") printf "    BAR1:         \e[32m%s\e[0m  (host maximum)\n" "$bar_sz" ;;
+            *)        printf "    BAR1:         %s\n" "$bar_sz" ;;
+        esac
+    fi
+
+    # Check runtime PM status
+    pm_status=$(cat "/sys/bus/pci/devices/$bdf/power/runtime_status" 2>/dev/null || echo "unknown")
+    printf "    pm_status:    %s\n" "$pm_status"
+
+    # Show IOMMU group peers
+    iommu_dir="/sys/kernel/iommu_groups/$iommu/devices" 2>/dev/null
+    if [ -d "$iommu_dir" ]; then
+        peers=$(ls "$iommu_dir" 2>/dev/null | grep -v "${bdf##0000:}" || true)
+        if [ -n "$peers" ]; then
+            printf "    iommu_peers:  %s\n" "$peers"
+        fi
+    fi
+    echo ""
+done < <(lspci -D -d 10DE: 2>/dev/null)
+
+if ! $FOUND; then
+    yellow "  No NVIDIA PCI devices found."
+    yellow "  (GPU may be hard-disabled via ASUS dgpu_disable, or absent.)"
+    echo ""
+fi
+
+# ── NVIDIA kernel modules ────────────────────────────────────
+echo "── NVIDIA Kernel Modules ──"
+echo ""
+has_mod=false
+for mod in nvidia_drm nvidia_modeset nvidia_uvm nvidia; do
+    if lsmod 2>/dev/null | grep -q "^$mod "; then
+        count=$(lsmod 2>/dev/null | grep "^$mod " | awk '{print $3}')
+        printf "  \e[32m%-20s  loaded  (used by: %s)\e[0m\n" "$mod" "${count:-0}"
+        has_mod=true
+    fi
+done
+if ! $has_mod; then
+    echo "  (none loaded)"
+fi
+echo ""
+
+# ── VFIO kernel modules ──────────────────────────────────────
+echo "── VFIO Kernel Modules ──"
+echo ""
+has_mod=false
+for mod in vfio_pci vfio_pci_core vfio_iommu_type1 vfio; do
+    if lsmod 2>/dev/null | grep -q "^$mod "; then
+        count=$(lsmod 2>/dev/null | grep "^$mod " | awk '{print $3}')
+        printf "  \e[35m%-20s  loaded  (used by: %s)\e[0m\n" "$mod" "${count:-0}"
+        has_mod=true
+    fi
+done
+if ! $has_mod; then
+    echo "  (none loaded)"
+fi
+echo ""
+
+# ── VM activity check (requires root) ────────────────────────
+echo "── VM Activity ──"
+echo ""
+if [ "$EUID" -eq 0 ]; then
+    vm_found=false
+    for vfio_dev in /dev/vfio/*; do
+        [ -e "$vfio_dev" ] || continue
+        iommu=$(basename "$vfio_dev")
+        if fuser "$vfio_dev" >/dev/null 2>&1; then
+            vm_found=true
+            printf "  \e[33m/dev/vfio/%s  IN USE by VM:\e[0m\n" "$iommu"
+            fuser -v "$vfio_dev" 2>&1 | sed 's/^/    /'
+        fi
+    done
+    if ! $vm_found; then
+        echo "  No VM seems to be using any VFIO device."
+    fi
+else
+    yellow "  Run as root for VM activity check."
+fi
+echo ""
+
+# ── Processes using nvidia devices ───────────────────────────
+echo "── Processes Using NVIDIA Devices ──"
+echo ""
+has_proc=false
+for nvdev in /dev/nvidia*; do
+    [ -e "$nvdev" ] || continue
+    if [ "$EUID" -eq 0 ]; then
+        pids=$(fuser "$nvdev" 2>/dev/null || true)
+        if [ -n "$pids" ]; then
+            has_proc=true
+            for pid in $pids; do
+                pname=$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")
+                user=$(ps -p "$pid" -o user= 2>/dev/null || echo "?")
+                printf "  %-8s  PID %-6s  %s\n" "$user" "$pid" "$pname"
+            done
+        fi
+    else
+        has_proc=true
+        yellow "  Run as root to check."
+        break
+    fi
+done
+if ! $has_proc; then
+    echo "  (none)"
+fi
+echo ""
+
+# ── DRM connectors (displays) ────────────────────────────────
+echo "── Displays Connected to NVIDIA ──"
+echo ""
+gpu_bdf=$(lspci -D -d 10DE::0300 2>/dev/null | awk 'NR==1{print $1}')
+if [ -n "$gpu_bdf" ] && [ -d "/sys/bus/pci/devices/$gpu_bdf/drm" ]; then
+    has_conn=false
+    for card in /sys/bus/pci/devices/$gpu_bdf/drm/card*; do
+        [ -d "$card" ] || continue
+        for conn in "$card"/card*-*/status; do
+            [ -f "$conn" ] || continue
+            conn_name=$(basename "$(dirname "$conn")")
+            status=$(cat "$conn" 2>/dev/null)
+            if [ "$status" = "connected" ]; then
+                has_conn=true
+                mode=$(cat "$(dirname "$conn")/modes" 2>/dev/null | head -1 || echo "?")
+                printf "  \e[33m%-10s  %-10s  %s\e[0m\n" "$conn_name" "$status" "$mode"
+            else
+                printf "  %-10s  %s\n" "$conn_name" "$status"
+            fi
+        done
+    done
+    if ! $has_conn; then
+        echo "  No displays connected."
+    fi
+else
+    echo "  NVIDIA DRM not available (GPU not on nvidia driver)."
+fi
+echo ""
+
+# ── Services ─────────────────────────────────────────────────
+echo "── NVIDIA Services ──"
+echo ""
+for svc in nvidia-persistenced.service nvidia-powerd.service; do
+    if systemctl is-active --quiet "$svc" 2>/dev/null; then
+        printf "  \e[32m%-35s active\e[0m\n" "$svc"
+    elif systemctl is-enabled --quiet "$svc" 2>/dev/null; then
+        printf "  \e[33m%-35s enabled but inactive\e[0m\n" "$svc"
+    else
+        printf "  %-35s not active\n" "$svc"
+    fi
+done
+
+# ── Cardwire ─────────────────────────────────────────────────
+# cardwired answers ENOENT on GPU device/sysfs paths for processes it has
+# not allowed, so the checks above can report a GPU as absent while it runs.
+# gpu-to-vfio / gpu-to-host / gpu-off / gpu-on pause it for their handoff.
+if systemctl is-active --quiet cardwired.service 2>/dev/null; then
+    mode=$(cardwire get 2>/dev/null | awk -F': ' '/Current Mode/{print $2}')
+    printf "  \e[32m%-35s active (%s)\e[0m\n" "cardwired.service" "${mode:-unknown mode}"
+    printf "  \e[33m%-35s GPU paths are filtered for non-allowed processes\e[0m\n" ""
+else
+    printf "  %-35s not active\n" "cardwired.service"
+fi
+echo ""
+
+# ── Kernel cmdline VFIO params ───────────────────────────────
+echo "── Kernel Cmdline VFIO Settings ──"
+echo ""
+grep -oP 'vfio[^ ]*' /proc/cmdline 2>/dev/null | sed 's/^/  /' || echo "  (none)"
+echo ""
+
+# ── Verdict ──────────────────────────────────────────────────
+echo "── Summary ──"
+echo ""
+if [ -n "$gpu_bdf" ]; then
+    drv=$(readlink "/sys/bus/pci/devices/$gpu_bdf/driver" 2>/dev/null | xargs basename 2>/dev/null || echo "none")
+    case "$drv" in
+        nvidia)
+            green "  GPU is bound to nvidia — ready for host use."
+            green "  To pass to a VM:    gpu-to-vfio"
+            ;;
+        vfio-pci)
+            green "  GPU is bound to vfio-pci — ready for VM passthrough."
+            green "  To return to host:  gpu-to-host"
+            ;;
+        *)
+            yellow "  GPU is on '$drv' — unexpected state."
+            ;;
+    esac
+else
+    yellow "  Could not detect GPU state."
+fi
+echo ""
+```
+
+### `scripts/gpu-vfio-apply.sh` — GUARDED host script: apply a deferred switch after logout
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+# ============================================================================
+#  REVIEW BEFORE RUNNING. This script detects the GPU itself (via lspci), but it
+#  still assumes things about your machine:
+#
+#    * the GPU is the first NVIDIA 3D controller lspci reports -- if you have
+#      more than one, set GPU_BDF below explicitly;
+#    * the BAR sizes at the bottom of this block match the card this was written
+#      for. Check what yours advertises:  lspci -vv | grep -A2 "Resizable BAR"
+#    * it may reference host services (e.g. a GPU power manager) that do not
+#      exist on your system. Those guards degrade to no-ops, but read them.
+#
+#  It will NOT silently damage anything: if it cannot find the GPU it stops.
+#  Still, read it before running it as root.
+# ============================================================================
+
+red()    { echo -e "\e[31m$*\e[0m" >&2; }
+green()  { echo -e "\e[32m$*\e[0m" >&2; }
+yellow() { echo -e "\e[33m$*\e[0m" >&2; }
+info()   { echo -e "\e[34m[INFO]\e[0m  $*" >&2; }
+ok()     { echo -e "\e[32m[OK]\e[0m    $*" >&2; }
+
+if [ "$EUID" -ne 0 ]; then exec sudo "$0" "$@"; fi
+
+PENDING="/etc/gpu-switch/pending"
+
+if [ ! -f "$PENDING" ]; then
+    red "No pending GPU switch found."
+    echo "Run gpu-to-vfio or gpu-to-host first to schedule a switch."
+    exit 1
+fi
+
+# ── Warn about active graphical sessions ─────────────────────
+if command -v loginctl &>/dev/null; then
+    ACTIVE=$(loginctl list-sessions --no-legend 2>/dev/null | grep -v "tty" | grep "seat0" | wc -l)
+    if [ "$ACTIVE" -gt 0 ]; then
+        yellow "WARNING: ${ACTIVE} active graphical session(s) detected."
+        yellow "It's safer to log out of your desktop first."
+        yellow "Then switch to a VT (Ctrl+Alt+F2), log in as root, and run this again."
+        echo ""
+        read -rp "Proceed anyway? [y/N] " ans
+        [[ "$ans" =~ ^[Yy] ]] || exit 1
+    fi
+fi
+
+# ── Read and apply ───────────────────────────────────────────
+MODE=$(cat "$PENDING")
+rm -f "$PENDING"
+
+info "Applying pending GPU switch: ${MODE}"
+case "$MODE" in
+    vfio)
+        info "Binding GPU to vfio-pci..."
+        exec gpu-to-vfio
+        ;;
+    host)
+        info "Returning GPU to nvidia host driver..."
+        exec gpu-to-host
+        ;;
+    *)
+        red "Unknown pending mode: ${MODE}"
+        exit 1
+        ;;
+esac
+```
+
+### `scripts/gpu-to-vfio.sh` — Simple host script: release the GPU, set BAR1, bind vfio-pci
 
 ```bash
 #!/usr/bin/env bash
@@ -1531,8 +2756,13 @@ Inline so this file stands alone. The same files are in `scripts/` and `tools/`.
 # fallback below 4 GiB).
 #
 # Set for your hardware:
-GPU_BDF="${GPU_BDF:-0000:01:00.0}"
-GPU_AUDIO_BDF="${GPU_AUDIO_BDF:-0000:01:00.1}"
+# ⚠️ EDIT THIS. The address below is DELIBERATELY FAKE (ff:1f.0 is not a real
+# device) so that a copy-paste fails loudly instead of touching the wrong GPU.
+# Find yours with:  lspci -nn | grep -i -e nvidia -e vga
+# It looks like 0000:01:00.0 -> use that. The audio function is .1 on the
+# same bus/slot.
+GPU_BDF="${GPU_BDF:-0000:ff:1f.0}"
+GPU_AUDIO_BDF="${GPU_AUDIO_BDF:-0000:ff:1f.1}"
 HOST_DRIVER="${HOST_DRIVER:-nvidia}"
 
 set -euo pipefail
@@ -1615,7 +2845,7 @@ done
 [ "$rc" -eq 0 ] && echo "OK — the GPU is ready to pass through" || { echo "FAILED — check dmesg" >&2; exit 1; }
 ```
 
-### `scripts/gpu-to-host.sh` — Give the GPU back to the host driver
+### `scripts/gpu-to-host.sh` — Simple host script: give the GPU back
 
 ```bash
 #!/usr/bin/env bash
@@ -1626,8 +2856,13 @@ done
 # Run this after shutting the VM down. Destroy the domain first; unbinding a GPU
 # that a running VM is using will not go well.
 
-GPU_BDF="${GPU_BDF:-0000:01:00.0}"
-GPU_AUDIO_BDF="${GPU_AUDIO_BDF:-0000:01:00.1}"
+# ⚠️ EDIT THIS. The address below is DELIBERATELY FAKE (ff:1f.0 is not a real
+# device) so that a copy-paste fails loudly instead of touching the wrong GPU.
+# Find yours with:  lspci -nn | grep -i -e nvidia -e vga
+# It looks like 0000:01:00.0 -> use that. The audio function is .1 on the
+# same bus/slot.
+GPU_BDF="${GPU_BDF:-0000:ff:1f.0}"
+GPU_AUDIO_BDF="${GPU_AUDIO_BDF:-0000:ff:1f.1}"
 HOST_DRIVER="${HOST_DRIVER:-nvidia}"
 HOST_BAR_IDX="${HOST_BAR_IDX:-14}"       # 14 = 16 GiB
 
@@ -1711,7 +2946,12 @@ nvidia-smi -L 2>/dev/null | sed 's/^/  /' || true
 # The device MUST be unbound while this runs (see gpu-to-vfio.sh, which does the
 # unbind, the resize and the vfio bind in the right order).
 
-GPU_BDF="${GPU_BDF:-0000:01:00.0}"
+# ⚠️ EDIT THIS. The address below is DELIBERATELY FAKE (ff:1f.0 is not a real
+# device) so that a copy-paste fails loudly instead of touching the wrong GPU.
+# Find yours with:  lspci -nn | grep -i -e nvidia -e vga
+# It looks like 0000:01:00.0 -> use that. The audio function is .1 on the
+# same bus/slot.
+GPU_BDF="${GPU_BDF:-0000:ff:1f.0}"
 
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 1; }
@@ -2530,9 +3770,9 @@ EOF
 * [OSX-KVM](https://github.com/kholia/OSX-KVM) — OpenCore packaging, the recovery-image
   tooling, and the boot script whose commented-out line turned out to be the fix.
 * The [Arch Wiki PCI passthrough](https://wiki.archlinux.org/title/PCI_passthrough_via_OVMF)
-  article — the standard reference for §3 and §4.
+  article — the standard reference for section 3 and section 4.
 
-Everything in this guide was measured on the machine described in §1. Where something is
+Everything in this guide was measured on the machine described in section 1. Where something is
 an inference rather than a measurement, it is labelled as one — most notably the
-~7.9 GiB parked-bytes figure in §12.2, which is derived from the refusal condition because
+~7.9 GiB parked-bytes figure in section 11.2, which is derived from the refusal condition because
 no counter exposes it.

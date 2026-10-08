@@ -11,8 +11,13 @@
 # fallback below 4 GiB).
 #
 # Set for your hardware:
-GPU_BDF="${GPU_BDF:-0000:01:00.0}"
-GPU_AUDIO_BDF="${GPU_AUDIO_BDF:-0000:01:00.1}"
+# ⚠️ EDIT THIS. The address below is DELIBERATELY FAKE (ff:1f.0 is not a real
+# device) so that a copy-paste fails loudly instead of touching the wrong GPU.
+# Find yours with:  lspci -nn | grep -i -e nvidia -e vga
+# It looks like 0000:01:00.0 -> use that. The audio function is .1 on the
+# same bus/slot.
+GPU_BDF="${GPU_BDF:-0000:ff:1f.0}"
+GPU_AUDIO_BDF="${GPU_AUDIO_BDF:-0000:ff:1f.1}"
 HOST_DRIVER="${HOST_DRIVER:-nvidia}"
 
 set -euo pipefail

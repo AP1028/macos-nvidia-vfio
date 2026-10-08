@@ -14,7 +14,12 @@
 # The device MUST be unbound while this runs (see gpu-to-vfio.sh, which does the
 # unbind, the resize and the vfio bind in the right order).
 
-GPU_BDF="${GPU_BDF:-0000:01:00.0}"
+# ⚠️ EDIT THIS. The address below is DELIBERATELY FAKE (ff:1f.0 is not a real
+# device) so that a copy-paste fails loudly instead of touching the wrong GPU.
+# Find yours with:  lspci -nn | grep -i -e nvidia -e vga
+# It looks like 0000:01:00.0 -> use that. The audio function is .1 on the
+# same bus/slot.
+GPU_BDF="${GPU_BDF:-0000:ff:1f.0}"
 
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 1; }

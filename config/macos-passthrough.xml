@@ -312,11 +312,6 @@
          through ACPI (IOPCIHPType = 0x21), and while QEMU advertises ACPI
          hotplug for the bridges macOS defers enumeration of everything behind a
          root port to runtime, which never happens: the card then shows up as
-              Bus 1, device 0, function 0: 10de:2c59
-                 IRQ 0, pin A
-                 BAR0/BAR1/BAR5: (not mapped)
-         with no 10de vendor-id anywhere in ioreg. With the property off, macOS
-         assigns resources to the device behind the root port normally.
 
          The host BAR1 is sized to 16 GiB before the domain starts
          (resource1_resize, bit index 14; see the README and gpu-to-vfio), and a
@@ -326,17 +321,31 @@
          libvirt bind vfio itself (the card is already on vfio-pci anyway).
          There is deliberately NO <rom bar='off'/>: macOS needs the native
          option ROM here. -->
+    <!-- ============================================================
+         EDIT THIS. 0xff:1f.0 below is a DELIBERATELY FAKE address: it is not
+         a real device on any machine, so the domain will fail to start until
+         you replace it with YOUR GPU's host address.
+
+         Find it with:   lspci -nn | grep -i -e nvidia -e vga
+         It looks like:  0000:01:00.0  ->  bus='0x01' slot='0x00' function='0x0'
+         (format: bus:slot.function, hex; the 0000: prefix is the domain)
+
+         Both functions must point at the SAME card: function 0 is the GPU,
+         function 1 is its HDMI/DP audio. Get the audio address from the same
+         lspci output (usually the next line, .1).
+         ============================================================ -->
     <hostdev mode='subsystem' type='pci' managed='yes'>
       <driver name='vfio'/>
       <source>
-        <address domain='0x0000' bus='0x01' slot='0x00' function='0x0'/>
+        <address domain='0x0000' bus='0xff' slot='0x1f' function='0x0'/>
       </source>
       <address type='pci' domain='0x0000' bus='0x01' slot='0x00' function='0x0' multifunction='on'/>
     </hostdev>
     <hostdev mode='subsystem' type='pci' managed='yes'>
       <driver name='vfio'/>
       <source>
-        <address domain='0x0000' bus='0x01' slot='0x00' function='0x1'/>
+        <!-- EDIT THIS TOO: your GPU's audio function (same bus/slot, function 1). -->
+        <address domain='0x0000' bus='0xff' slot='0x1f' function='0x1'/>
       </source>
       <address type='pci' domain='0x0000' bus='0x01' slot='0x00' function='0x1'/>
     </hostdev>
@@ -360,7 +369,46 @@
          NullMoth driver was tested on). -->
     <qemu:arg value='-smbios'/>
     <qemu:arg value='type=2'/>
-    <!-- THE KEY FIX. Bridge-level ACPI hotplug OFF. With this property on
+    <!-- ============================================================
+         THE KEY FIX. If you take one thing from this file, take this property.
+         ============================================================
+
+         Bridge-level ACPI hotplug OFF.
+
+         WHY, in one paragraph: with this property ON (QEMU's default) the PCIe
+         root ports advertise ZERO-SIZE `ranges` : all three window descriptors
+         (32-bit MMIO, 64-bit prefetchable, I/O) report a size of 0. macOS reads
+         those windows from firmware and believes them, so it assigns the device
+         behind the port no address space at all. The card is visible in PCI
+         config space : macOS reads its vendor/device id and bus/device/function
+         : but gets no BAR, no interrupt (IRQ 0) and no IORegistry node, so the
+         driver never attaches. Turning this property off makes the root ports
+         advertise real windows, macOS resources the device normally, and the
+         driver's placeLargeBar1() finally has the parent bridge it requires to
+         place a large BAR itself.
+
+         Linux is unaffected either way : it ignores `ranges` and programs the
+         bridge's window registers directly. That asymmetry is what proved the
+         fault was macOS-side rather than QEMU's: on identical QEMU config, Linux
+         gave the same card behind the same root port IRQ 11 and every BAR,
+         including one above 4G.
+
+         Full details, the measurements, and everything that does NOT work are in
+         the README (section: the critical QEMU setting).
+
+         VERIFY IT REACHED QEMU. libvirt silently drops attributes it does not
+         understand, and a dropped setting is indistinguishable from one that
+         does not work. After starting the domain:
+
+             P=$(pgrep -f "guest=macos" | head -1)
+             tr '\0' '\n' < /proc/$P/cmdline | grep -c acpi-pci-hotplug-with-bridge-support
+
+         That must print 1 or more. If it prints 0, this property did not reach
+         QEMU and nothing downstream will work.
+
+         OSX-KVM carries exactly this line (OpenCore-Boot.sh:47) commented out.
+         Per-root-port hotplug='off' attributes on the controllers above do NOT
+         reach it : libvirt accepts them and silently discards them. --> With this property on
          (QEMU's default) QEMU advertises ACPI hotplug slots for the PCIe
          bridges, and macOS 15, which enumerates PCIe through ACPI,
          IOPCIHPType = 0x21, defers enumeration of anything behind a root port
