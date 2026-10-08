@@ -113,35 +113,9 @@ ensure_bar1_for_vfio() {
     echo "$dev" > /sys/bus/pci/drivers_probe 2>/dev/null || true
 }
 
-# ── Cardwire: pause the GPU manager for the handoff ──────────
-# cardwired holds /dev/nvidia* open for its eBPF LSM hooks, and that LSM
-# answers ENOENT on GPU device/sysfs paths. Left running it both pins the
-# nvidia modules (rmmod fails) and hides the real holders from gpu_holders
-# below — the two things this script depends on. The EXIT trap resumes it
-# only if the GPU ends up back on the nvidia driver: on vfio-pci there is
-# nothing for cardwire to manage.
-if systemctl is-active --quiet cardwired.service 2>/dev/null; then
-    systemctl stop cardwired.service 2>/dev/null \
-        && ok "cardwired paused for GPU handoff" \
-        || warn "could not stop cardwired — module unload may fail"
-fi
-cardwire_resume() {
-    local drv="none"
-    if [ -n "${GPU_BDF:-}" ]; then
-        drv=$(readlink "/sys/bus/pci/devices/$GPU_BDF/driver" 2>/dev/null | xargs basename 2>/dev/null || echo none)
-    fi
-    [ "$drv" = "nvidia" ] || return 0
-    systemctl is-enabled --quiet cardwired.service 2>/dev/null || return 0
-    systemctl is-active --quiet cardwired.service 2>/dev/null && return 0
-    systemctl start cardwired.service 2>/dev/null && ok "cardwired resumed"
-    return 0
-}
-trap cardwire_resume EXIT
-
 # ── GPU-holder helpers (used by the force path) ──────────────
 # System daemons are tolerated here — they are stopped via systemd later.
-# cardwired is paused above; it is never a GPU holder to act on.
-IGNORE_PROCS="nvidia-powerd|nvidia-persistenced|cardwired"
+IGNORE_PROCS="nvidia-powerd|nvidia-persistenced"
 
 # List live (non-zombie) PIDs holding NVIDIA devices
 gpu_holders() {

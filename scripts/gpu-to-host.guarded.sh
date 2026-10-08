@@ -28,35 +28,21 @@ if [ "$EUID" -ne 0 ]; then exec sudo "$0" "$@"; fi
 SILENT=false
 case "${1:-}" in -s) SILENT=true; shift;; esac
 
-# ── Cardwire: pause the GPU manager for the handoff ──────────
-# Same as gpu-to-vfio: while cardwired runs, its LSM hides the GPU paths
-# this script probes. Resumed by the EXIT trap when the GPU is back on
-# nvidia (gpu-on handles the "GPU was powered off" path via exec below).
-if systemctl is-active --quiet cardwired.service 2>/dev/null; then
-    systemctl stop cardwired.service 2>/dev/null \
-        && ok "cardwired paused for GPU handoff" \
-        || warn "could not stop cardwired — binding may misbehave"
-fi
-cardwire_resume() {
-    local drv="none"
-    if [ -n "${GPU_BDF:-}" ]; then
-        drv=$(readlink "/sys/bus/pci/devices/$GPU_BDF/driver" 2>/dev/null | xargs basename 2>/dev/null || echo none)
-    fi
-    [ "$drv" = "nvidia" ] || return 0
-    systemctl is-enabled --quiet cardwired.service 2>/dev/null || return 0
-    systemctl is-active --quiet cardwired.service 2>/dev/null && return 0
-    systemctl start cardwired.service 2>/dev/null && ok "cardwired resumed"
-    return 0
-}
-trap cardwire_resume EXIT
-
 # ── Discover / wake NVIDIA dGPU ──────────────────────────────
 info "Discovering NVIDIA dGPU..."
 
 GPU_BDF=$(lspci -D -d 10DE::0300 2>/dev/null | awk 'NR==1{print $1}')
 if [ -z "$GPU_BDF" ]; then
-    info "dGPU is off — running gpu-on to power it on..."
-    exec gpu-on
+    # The dGPU is not visible at all: on laptops it is usually powered down, and
+    # waking it is vendor-specific (on ASUS it is the dgpu_disable attribute, and
+    # on some machines the GPU only appears once the MUX or the vendor tool
+    # enables it). This script cannot do that portably, so it stops here rather
+    # than exec'ing something that may not exist.
+    fail "No NVIDIA GPU visible on the PCI bus."
+    echo "  Power it on first (vendor-specific: check for a dgpu_disable or" >&2
+    echo "  similar attribute under /sys/devices/platform/, or your laptop's" >&2
+    echo "  GPU mode setting), then re-run this script." >&2
+    exit 1
 fi
 GPU_BUSDEV="${GPU_BDF%.*}"
 

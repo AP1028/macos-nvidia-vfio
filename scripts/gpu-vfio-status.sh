@@ -227,20 +227,6 @@ for svc in nvidia-persistenced.service nvidia-powerd.service; do
         printf "  %-35s not active\n" "$svc"
     fi
 done
-
-# ── Cardwire ─────────────────────────────────────────────────
-# cardwired answers ENOENT on GPU device/sysfs paths for processes it has
-# not allowed, so the checks above can report a GPU as absent while it runs.
-# gpu-to-vfio / gpu-to-host / gpu-off / gpu-on pause it for their handoff.
-if systemctl is-active --quiet cardwired.service 2>/dev/null; then
-    mode=$(cardwire get 2>/dev/null | awk -F': ' '/Current Mode/{print $2}')
-    printf "  \e[32m%-35s active (%s)\e[0m\n" "cardwired.service" "${mode:-unknown mode}"
-    printf "  \e[33m%-35s GPU paths are filtered for non-allowed processes\e[0m\n" ""
-else
-    printf "  %-35s not active\n" "cardwired.service"
-fi
-echo ""
-
 # ── Kernel cmdline VFIO params ───────────────────────────────
 echo "── Kernel Cmdline VFIO Settings ──"
 echo ""

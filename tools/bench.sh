@@ -17,13 +17,13 @@ NVRM=$(sysctl -n kern.boottime >/dev/null 2>&1; echo)
 # The GUI session must be LIVE or the load runs against the login window and the
 # numbers are meaningless (a WS restart drops to `console user: root` until the
 # session comes back). Wait for it, with a hard cap.
-# `console user == tianyixia` is NOT sufficient: it can be set while the desktop
+# `console user != root` is NOT sufficient: it can be set while the desktop
 # is still coming up, and then the load measures a half-initialised session
 # (mapped VRAM ~114 MB instead of ~152-175 MB, and ~10 fps instead of ~133).
 # Require a real session: the console user AND the Dock (only runs in a full
 # session) AND the framebuffer showing session-sized VRAM use.
 session_up() {
-    [ "$(stat -f %Su /dev/console 2>/dev/null)" = "tianyixia" ] || return 1
+    [ "$(stat -f %Su /dev/console 2>/dev/null)" = "$(id -un)" ] || [ "$(stat -f %Su /dev/console 2>/dev/null)" != "root" ] || return 1
     pgrep -x Dock >/dev/null 2>&1 || return 1
     local m=$(($(sysctl -n debug.nvrmfb_vram_mapped_bytes 2>/dev/null || echo 0)/1048576))
     [ "$m" -ge 130 ] || return 1

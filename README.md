@@ -1663,35 +1663,9 @@ ensure_bar1_for_vfio() {
     echo "$dev" > /sys/bus/pci/drivers_probe 2>/dev/null || true
 }
 
-# ── Cardwire: pause the GPU manager for the handoff ──────────
-# cardwired holds /dev/nvidia* open for its eBPF LSM hooks, and that LSM
-# answers ENOENT on GPU device/sysfs paths. Left running it both pins the
-# nvidia modules (rmmod fails) and hides the real holders from gpu_holders
-# below — the two things this script depends on. The EXIT trap resumes it
-# only if the GPU ends up back on the nvidia driver: on vfio-pci there is
-# nothing for cardwire to manage.
-if systemctl is-active --quiet cardwired.service 2>/dev/null; then
-    systemctl stop cardwired.service 2>/dev/null \
-        && ok "cardwired paused for GPU handoff" \
-        || warn "could not stop cardwired — module unload may fail"
-fi
-cardwire_resume() {
-    local drv="none"
-    if [ -n "${GPU_BDF:-}" ]; then
-        drv=$(readlink "/sys/bus/pci/devices/$GPU_BDF/driver" 2>/dev/null | xargs basename 2>/dev/null || echo none)
-    fi
-    [ "$drv" = "nvidia" ] || return 0
-    systemctl is-enabled --quiet cardwired.service 2>/dev/null || return 0
-    systemctl is-active --quiet cardwired.service 2>/dev/null && return 0
-    systemctl start cardwired.service 2>/dev/null && ok "cardwired resumed"
-    return 0
-}
-trap cardwire_resume EXIT
-
 # ── GPU-holder helpers (used by the force path) ──────────────
 # System daemons are tolerated here — they are stopped via systemd later.
-# cardwired is paused above; it is never a GPU holder to act on.
-IGNORE_PROCS="nvidia-powerd|nvidia-persistenced|cardwired"
+IGNORE_PROCS="nvidia-powerd|nvidia-persistenced"
 
 # List live (non-zombie) PIDs holding NVIDIA devices
 gpu_holders() {
@@ -2116,35 +2090,21 @@ if [ "$EUID" -ne 0 ]; then exec sudo "$0" "$@"; fi
 SILENT=false
 case "${1:-}" in -s) SILENT=true; shift;; esac
 
-# ── Cardwire: pause the GPU manager for the handoff ──────────
-# Same as gpu-to-vfio: while cardwired runs, its LSM hides the GPU paths
-# this script probes. Resumed by the EXIT trap when the GPU is back on
-# nvidia (gpu-on handles the "GPU was powered off" path via exec below).
-if systemctl is-active --quiet cardwired.service 2>/dev/null; then
-    systemctl stop cardwired.service 2>/dev/null \
-        && ok "cardwired paused for GPU handoff" \
-        || warn "could not stop cardwired — binding may misbehave"
-fi
-cardwire_resume() {
-    local drv="none"
-    if [ -n "${GPU_BDF:-}" ]; then
-        drv=$(readlink "/sys/bus/pci/devices/$GPU_BDF/driver" 2>/dev/null | xargs basename 2>/dev/null || echo none)
-    fi
-    [ "$drv" = "nvidia" ] || return 0
-    systemctl is-enabled --quiet cardwired.service 2>/dev/null || return 0
-    systemctl is-active --quiet cardwired.service 2>/dev/null && return 0
-    systemctl start cardwired.service 2>/dev/null && ok "cardwired resumed"
-    return 0
-}
-trap cardwire_resume EXIT
-
 # ── Discover / wake NVIDIA dGPU ──────────────────────────────
 info "Discovering NVIDIA dGPU..."
 
 GPU_BDF=$(lspci -D -d 10DE::0300 2>/dev/null | awk 'NR==1{print $1}')
 if [ -z "$GPU_BDF" ]; then
-    info "dGPU is off — running gpu-on to power it on..."
-    exec gpu-on
+    # The dGPU is not visible at all: on laptops it is usually powered down, and
+    # waking it is vendor-specific (on ASUS it is the dgpu_disable attribute, and
+    # on some machines the GPU only appears once the MUX or the vendor tool
+    # enables it). This script cannot do that portably, so it stops here rather
+    # than exec'ing something that may not exist.
+    fail "No NVIDIA GPU visible on the PCI bus."
+    echo "  Power it on first (vendor-specific: check for a dgpu_disable or" >&2
+    echo "  similar attribute under /sys/devices/platform/, or your laptop's" >&2
+    echo "  GPU mode setting), then re-run this script." >&2
+    exit 1
 fi
 GPU_BUSDEV="${GPU_BDF%.*}"
 
@@ -2626,20 +2586,6 @@ for svc in nvidia-persistenced.service nvidia-powerd.service; do
         printf "  %-35s not active\n" "$svc"
     fi
 done
-
-# ── Cardwire ─────────────────────────────────────────────────
-# cardwired answers ENOENT on GPU device/sysfs paths for processes it has
-# not allowed, so the checks above can report a GPU as absent while it runs.
-# gpu-to-vfio / gpu-to-host / gpu-off / gpu-on pause it for their handoff.
-if systemctl is-active --quiet cardwired.service 2>/dev/null; then
-    mode=$(cardwire get 2>/dev/null | awk -F': ' '/Current Mode/{print $2}')
-    printf "  \e[32m%-35s active (%s)\e[0m\n" "cardwired.service" "${mode:-unknown mode}"
-    printf "  \e[33m%-35s GPU paths are filtered for non-allowed processes\e[0m\n" ""
-else
-    printf "  %-35s not active\n" "cardwired.service"
-fi
-echo ""
-
 # ── Kernel cmdline VFIO params ───────────────────────────────
 echo "── Kernel Cmdline VFIO Settings ──"
 echo ""
@@ -3026,13 +2972,13 @@ NVRM=$(sysctl -n kern.boottime >/dev/null 2>&1; echo)
 # The GUI session must be LIVE or the load runs against the login window and the
 # numbers are meaningless (a WS restart drops to `console user: root` until the
 # session comes back). Wait for it, with a hard cap.
-# `console user == tianyixia` is NOT sufficient: it can be set while the desktop
+# `console user != root` is NOT sufficient: it can be set while the desktop
 # is still coming up, and then the load measures a half-initialised session
 # (mapped VRAM ~114 MB instead of ~152-175 MB, and ~10 fps instead of ~133).
 # Require a real session: the console user AND the Dock (only runs in a full
 # session) AND the framebuffer showing session-sized VRAM use.
 session_up() {
-    [ "$(stat -f %Su /dev/console 2>/dev/null)" = "tianyixia" ] || return 1
+    [ "$(stat -f %Su /dev/console 2>/dev/null)" = "$(id -un)" ] || [ "$(stat -f %Su /dev/console 2>/dev/null)" != "root" ] || return 1
     pgrep -x Dock >/dev/null 2>&1 || return 1
     local m=$(($(sysctl -n debug.nvrmfb_vram_mapped_bytes 2>/dev/null || echo 0)/1048576))
     [ "$m" -ge 130 ] || return 1
@@ -3717,6 +3663,10 @@ int main(int argc, char **argv) {
 # qcow2, so the 1 TiB is a ceiling, not an allocation.
 set -euo pipefail
 
+# ⚠️ EDIT THESE PATHS. OSX_KVM must point at your clone of OSX-KVM
+# (it needs BaseSystem.img and OpenCore/OpenCore.qcow2 inside it).
+OSX_KVM="${OSX_KVM:-/path/to/OSX-KVM}"
+
 HERE=$(cd "$(dirname "$0")" && pwd)
 DISK=/var/lib/libvirt/images/macos.img
 DISK_SIZE=1T
@@ -3740,7 +3690,7 @@ chown root:root "$DISK"
 chmod 600 "$DISK"
 
 echo "== 2. installer media"
-for f in /home/tianyixia/OSX-KVM/BaseSystem.img /home/tianyixia/OSX-KVM/OpenCore/OpenCore.qcow2; do
+for f in "$OSX_KVM"/BaseSystem.img "$OSX_KVM"/OpenCore/OpenCore.qcow2; do
   [ -f "$f" ] || { echo "   STOP: missing $f" >&2; exit 1; }
   echo "   ok: $f"
 done

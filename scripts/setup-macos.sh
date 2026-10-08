@@ -7,6 +7,10 @@
 # qcow2, so the 1 TiB is a ceiling, not an allocation.
 set -euo pipefail
 
+# ⚠️ EDIT THESE PATHS. OSX_KVM must point at your clone of OSX-KVM
+# (it needs BaseSystem.img and OpenCore/OpenCore.qcow2 inside it).
+OSX_KVM="${OSX_KVM:-/path/to/OSX-KVM}"
+
 HERE=$(cd "$(dirname "$0")" && pwd)
 DISK=/var/lib/libvirt/images/macos.img
 DISK_SIZE=1T
@@ -30,7 +34,7 @@ chown root:root "$DISK"
 chmod 600 "$DISK"
 
 echo "== 2. installer media"
-for f in /home/tianyixia/OSX-KVM/BaseSystem.img /home/tianyixia/OSX-KVM/OpenCore/OpenCore.qcow2; do
+for f in "$OSX_KVM"/BaseSystem.img "$OSX_KVM"/OpenCore/OpenCore.qcow2; do
   [ -f "$f" ] || { echo "   STOP: missing $f" >&2; exit 1; }
   echo "   ok: $f"
 done
