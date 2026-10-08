@@ -195,8 +195,39 @@ blacklisting turns a reversible handoff into a reboot.
 ## 4. Binding the GPU to vfio-pci, and hot-swapping it back
 
 This is the part that lets you use the GPU on the host and pass it to the guest without
-rebooting. `scripts/gpu-to-vfio.sh` and `scripts/gpu-to-host.sh` in this repo do it; the
-logic is explained here so you can adapt it.
+rebooting. **This repo ships two sets of scripts that do it** — see
+[Appendix B](#appendix-b--supporting-files-in-this-repo) — and the logic is explained here
+so you can adapt or debug them.
+
+### First: find your GPU's address
+
+**Nothing below works until you substitute your own address for the placeholder.** PCI
+addresses appear in three different formats in this guide and getting the conversion wrong
+is the most common way to end up acting on the wrong device:
+
+```bash
+lspci -nn | grep -i -e nvidia -e vga
+```
+
+```
+01:00.0 VGA compatible controller [0300]: NVIDIA Corporation ... [10de:2c59]
+01:00.1 Audio device [0403]: NVIDIA Corporation ... [10de:22e9]
+```
+
+| where | format | looks like |
+|---|---|---|
+| `lspci` output | `bus:slot.function` | `01:00.0` |
+| sysfs paths, and the `GPU_BDF` / `GPU_AUDIO_BDF` variables in the scripts | `domain:bus:slot.function` | `0000:ff:1f.0` |
+| the domain XML's `<hostdev><source>` | four hex attributes | `domain='0x0000' bus='0xff' slot='0x1f' function='0x0'` |
+| the domain XML's guest `<address type='pci'>` | **not the same thing at all** — this is where the device appears *inside* the guest | `bus='0x01' slot='0x00'` |
+
+`lspci -D` prints the long form directly if you would rather not add the `0000:` yourself.
+**Both functions of the card must be listed** — the GPU (`.0`) and its audio device
+(`.1`) — or the guest sees half a card.
+
+Throughout this guide the placeholder `0000:ff:1f.0` is used. `ff:1f.0` is not a real
+device on any machine, so commands left unedited fail loudly instead of touching something
+unexpected.
 
 ### The rule that breaks naive scripts
 
@@ -205,28 +236,42 @@ kernel re-binds the device immediately, the unbind silently fails, and the BAR r
 follows then operates on a device that is still in use.
 
 ```bash
-G=/sys/bus/pci/devices/0000:01:00.0
+# ⚠️ SET THESE FIRST. ff:1f is a deliberately fake address: substitute yours from
+# the recipe above, or every command below acts on a device that does not exist.
+GPU=0000:ff:1f.0
+AUDIO=0000:ff:1f.1
+G=/sys/bus/pci/devices/$GPU
 D=/sys/bus/pci/drivers/vfio-pci
 
 # (1) stop anything using the GPU — see the warning below
 # (2) clear driver_override FIRST
 echo "" > $G/driver_override
 # (3) unbind from the current driver
-echo "0000:01:00.0" > /sys/bus/pci/drivers/$(basename $(readlink $G/driver))/unbind
+echo "$GPU" > /sys/bus/pci/drivers/$(basename $(readlink $G/driver))/unbind
 # (4) set the BAR size (see section 5)
 printf "14\n" > $G/resource1_resize
 # (5) claim it
 echo "vfio-pci" > $G/driver_override
-echo "0000:01:00.0" > $D/bind
+echo "$GPU" > $D/bind
 ```
 
 To give it back:
 
 ```bash
 echo "" > $G/driver_override
-echo "0000:01:00.0" > $D/unbind
-echo "0000:01:00.0" > /sys/bus/pci/drivers/nvidia/bind
+echo "$GPU" > $D/unbind
+echo "$GPU" > /sys/bus/pci/drivers/nvidia/bind
 ```
+
+### Or just use the scripts
+
+`scripts/gpu-to-vfio.sh` and `scripts/gpu-to-host.sh` do the above. If you would rather
+have the checks, `scripts/gpu-to-vfio.guarded.sh` and `scripts/gpu-to-host.guarded.sh`
+add them: they refuse to unbind while anything holds the GPU open, detect a powered-off
+GPU, verify the binding afterwards, and offer a "schedule this for after your next
+logout" path for when the GPU is driving your desktop. See
+[Appendix B](#appendix-b--supporting-files-in-this-repo) for both sets, and **edit the
+addresses at the top of whichever you use.**
 
 ### Warning: unbinding a busy GPU can hang the kernel
 
@@ -269,15 +314,15 @@ has, and a 16 GiB BAR gives an 8 GiB budget.
 | 12 | 4 GiB | | | |
 
 ```bash
-echo 14 > /sys/bus/pci/devices/0000:01:00.0/resource1_resize   # 16 GiB
+echo 14 > /sys/bus/pci/devices/$GPU/resource1_resize   # 16 GiB
 ```
 
 The card only accepts sizes it advertises. Read what yours offers:
 
 ```bash
-cat /sys/bus/pci/devices/0000:01:00.0/resource1_resize   # 0 = unsupported
+cat /sys/bus/pci/devices/$GPU/resource1_resize   # 0 = unsupported
 # -1 means "unsupported" too, in some kernels
-lspci -vv -s 01:00.0 | grep -A2 "Resizable BAR"
+lspci -vv -s "${GPU#0000:}" | grep -A2 "Resizable BAR"
 ```
 
 ### What size to pick
@@ -301,7 +346,7 @@ the QEMU setting there.
 Verify after setting it:
 
 ```bash
-python3 -c "l=open('/sys/bus/pci/devices/0000:01:00.0/resource').readlines(); \
+python3 -c "l=open('/sys/bus/pci/devices/$GPU/resource').readlines(); \
 a=int(l[1].split()[0],16); b=int(l[1].split()[1],16); print((b-a+1)/2**30,'GiB')"
 ```
 
