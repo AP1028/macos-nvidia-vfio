@@ -295,7 +295,16 @@
          this guest with every vCPU spinning; -hle/-rtm disable TSX. -->
     <qemu:arg value='-cpu'/>
     <qemu:arg value='Skylake-Client,-hle,-rtm,kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,+avx,+aes,+xsave,+xsaveopt,check'/>
-    <!-- AppleSMC: OpenCore needs it to expose the SMC keys macOS reads. -->
+    <!-- AppleSMC: OpenCore needs it to expose the SMC keys macOS reads, and
+         macOS refuses to boot without it.
+
+         The osk below is a PLACEHOLDER. The real one is the 64-byte key held in
+         the SMC of genuine Apple hardware. It is Apple's property, which is why
+         this file does not carry it: redistributing it is what gets
+         macOS-passthrough repositories taken down.
+
+         Supply your own : see "OSX-KVM: the pieces macOS needs" in the README
+         for how. Until you do, the domain will start but macOS will not boot. -->
     <qemu:arg value='-device'/>
     <qemu:arg value='isa-applesmc,osk=REPLACE_WITH_YOUR_OWN_OSK'/>
     <!-- Board identity macOS accepts with a discrete GPU (the model the
