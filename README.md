@@ -28,8 +28,7 @@ getting past that is what most of the later sections are about.)
 - [12. Troubleshooting: things that do NOT work](#12-troubleshooting-things-that-do-not-work)
 - [Appendix A — the full domain XML, both stages](#appendix-a-the-full-domain-xml-both-stages)
 - [Appendix B — supporting files in this repo](#appendix-b-supporting-files-in-this-repo)
-- [Appendix C — findings for the driver author](#appendix-c-findings-for-the-driver-author)
-- [Appendix D — full source of every script](#appendix-d-full-source-of-every-script)
+- [Appendix C — full source of every script](#appendix-c-full-source-of-every-script)
 - [Credits and provenance](#credits-and-provenance)
 
 ---
@@ -606,9 +605,8 @@ figures *while window switching was failing*. See the park leak in section 11.2.
 
 ## 11. Known bugs and recovery
 
-Driver-side defects, current as of driver 1.0.9. None is fixable by configuration — and
-`NVRM.kext` cannot be built from public sources, so they have to go upstream
-(Appendix C).
+Driver-side defects, current as of driver 1.0.9. None is fixable by configuration: the
+kexts cannot be built from public sources, so they have to be fixed upstream.
 
 ### 11.1 A display-mode transition wedges the display — breaks the session
 
@@ -1520,38 +1518,7 @@ Both sets run on the host, need root, and take the BAR bit index as an argument.
 
 ---
 
-## Appendix C — findings for the driver author
-
-Full write-up with measurements is in [`FINDINGS.md`](FINDINGS.md).
-
-**Many of those findings were measured in an older configuration** — GPU on bus `0x00`
-with a 256 MB BAR and a 192 MB budget — which was the consequence of one QEMU property
-being left at its default, not a macOS requirement. With the fix in this guide the
-driver places a 16 GiB BAR and the budget is 8 GiB, and several findings stop
-reproducing. `FINDINGS.md` classifies all fifteen by era; read that table before acting
-on any of them.
-
-Currently applicable, in severity order:
-
-| # | finding | severity |
-|---|---|---|
-| 12 | **scanout binding survives a display-mode transition** — breaks the session; needs a WindowServer restart. Reproduced at 16 GiB | **highest** |
-| 13 | **park leak consumes the budget** — 8-16 refusals per window switch; the parked counter is not exposed. Worse, not better, with a large BAR | high |
-| 14 | **Metal → SPIR-V translation dominates runtime** — a persistent pipeline cache would fix the world-load stall | high |
-| 15 | **`NVRM.kext` is not buildable from public sources** — three verified gaps; the display code is headers-only, so 12-14 cannot be patched from outside | blocking |
-| 2, 4, 5, 8, 9 | allow-list rung order; no lower refresh rate; resolution change wedges the display; `NVMTL_HWPOOL=1` panics; the park leak itself | varies |
-
-From the old configuration, and to be re-checked rather than acted on: 1, 3, 6, 7 and 10.
-Withdrawn or retracted: **6** (the shipped conf was not the problem, the budget was),
-**7** (obsolete), **11** (a large BAR does work in a VM).
-
-**Concrete requests:** a way to re-bind the scanout without restarting the WindowServer; a
-sysctl exposing `gVramParkedBytes`; release parked allocations; a persistent pipeline
-cache; and publish `build-nvrm.sh` or the Darwin port of the open-gpu-kernel-modules.
-
----
-
-## Appendix D — full source of every script
+## Appendix C — full source of every script
 
 Inline so this file stands alone. The same files are in `scripts/` and `tools/`.
 
