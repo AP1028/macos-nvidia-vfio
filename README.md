@@ -15,20 +15,20 @@ getting past that is what most of the later sections are about.)
 ## Contents
 
 - [1. What you need](#1-what-you-need)
-- [2. Firmware / BIOS](#2-firmware-bios)
+- [2. Firmware setup](#2-firmware-setup)
 - [3. Host: IOMMU and vfio](#3-host-iommu-and-vfio)
 - [4. Binding the GPU to vfio-pci, and hot-swapping it back](#4-binding-the-gpu-to-vfio-pci-and-hot-swapping-it-back)
-- [5. Choosing the BAR size — and what your GPU supports](#5-choosing-the-bar-size-and-what-your-gpu-supports)
+- [5. Choosing the BAR size](#5-choosing-the-bar-size)
 - [6. OSX-KVM: the pieces macOS needs](#6-osx-kvm-the-pieces-macos-needs)
 - [7. libvirt: which config, at which stage](#7-libvirt-which-config-at-which-stage)
 - [8. Installing macOS](#8-installing-macos)
 - [9. Installing the NullMoth driver](#9-installing-the-nullmoth-driver)
 - [10. Verification](#10-verification)
 - [11. Known bugs and recovery](#11-known-bugs-and-recovery)
-- [12. Troubleshooting: things that do NOT work](#12-troubleshooting-things-that-do-not-work)
-- [Appendix A — the full domain XML, both stages](#appendix-a-the-full-domain-xml-both-stages)
-- [Appendix B — supporting files in this repo](#appendix-b-supporting-files-in-this-repo)
-- [Appendix C — full source of every script](#appendix-c-full-source-of-every-script)
+- [12. Troubleshooting](#12-troubleshooting)
+- [Appendix A. The full domain XML, both stages](#appendix-a-the-full-domain-xml-both-stages)
+- [Appendix B. Supporting files in this repo](#appendix-b-supporting-files-in-this-repo)
+- [Appendix C. Full source of every script](#appendix-c-full-source-of-every-script)
 - [Credits and provenance](#credits-and-provenance)
 
 ---
@@ -42,7 +42,7 @@ getting past that is what most of the later sections are about.)
 | CPU | Intel with VT-d, or AMD with AMD-Vi (IOMMU). Almost everything since ~2015 has it; firmware support is the variable. |
 | GPU | An NVIDIA GPU from the GSP generation (Turing/RTX 20-series or newer). Get its ids with `lspci -nn`; wherever this guide needs them it writes `<vendor>:<device>`, for example `10de:2c59`. Substitute your own. |
 | Second GPU | **Strongly recommended.** If the passed-through GPU is your only display adapter, shutting down the VM leaves you with no console. |
-| Display | Anything driven by the passed-through GPU's outputs. Verified here on a 3440x1440 @ 165 Hz monitor on the card's DP-1. |
+| Display | Anything driven by the passed-through GPU's outputs. A monitor on the card's own output is the normal arrangement. |
 
 **Laptop caveat.** On many gaming laptops the discrete GPU is wired to the internal panel
 through a **MUX**. If the MUX is set to the iGPU, a passed-through NVIDIA cannot drive the
@@ -60,8 +60,9 @@ the card's DP-1.
 > is exactly the thing that would need to work, and it is unverified. Do not plan around
 > it without testing.
 
-**Verified on:** ASUS ROG laptop, Intel Core Ultra 9 285H, NVIDIA RTX 5080 Max-Q
-(mobile GB203M; its ids are `10de:2c59`/`10de:22e9`), NixOS host, QEMU 11.1.1, macOS 15.8.1 guest.
+**Verified on:** a laptop with an Intel CPU and a mobile NVIDIA RTX 5080 Max-Q (GB203M),
+QEMU 11.1.1 and macOS 15.8.1. Passthrough works on desktop cards too; nothing here depends
+on it being a laptop.
 
 ### Software
 
@@ -73,7 +74,7 @@ the card's DP-1.
 
 ---
 
-## 2. Firmware / BIOS
+## 2. Firmware setup
 
 Enter firmware setup and enable, in roughly this order:
 
@@ -148,8 +149,7 @@ lspci -nn | grep -i -e nvidia -e vga
 
 **Do not add `pcie_acs_override=downstream,multifunction` unless you must.** It exists to
 split IOMMU groups so devices can be isolated, but it weakens the isolation guarantee and
-is a security trade-off. Check your groups first (§ below); most modern boards do not need
-it, and this machine does not.
+is a security trade-off. Check your groups first (§ below); most modern boards do not need it.
 
 ### Verify IOMMU groups
 
@@ -195,7 +195,7 @@ blacklisting turns a reversible handoff into a reboot.
 
 This is the part that lets you use the GPU on the host and pass it to the guest without
 rebooting. **This repo ships two sets of scripts that do it** — see
-[Appendix B](#appendix-b--supporting-files-in-this-repo) — and the logic is explained here
+[Appendix B](#appendix-b-supporting-files-in-this-repo) — and the logic is explained here
 so you can adapt or debug them.
 
 ### First: find your GPU's address
@@ -269,7 +269,7 @@ have the checks, `scripts/gpu-to-vfio.guarded.sh` and `scripts/gpu-to-host.guard
 add them: they refuse to unbind while anything holds the GPU open, detect a powered-off
 GPU, verify the binding afterwards, and offer a "schedule this for after your next
 logout" path for when the GPU is driving your desktop. See
-[Appendix B](#appendix-b--supporting-files-in-this-repo) for both sets, and **edit the
+[Appendix B](#appendix-b-supporting-files-in-this-repo) for both sets, and **edit the
 addresses at the top of whichever you use.**
 
 ### Warning: unbinding a busy GPU can hang the kernel
@@ -290,7 +290,7 @@ card is usually idle and this is trivial.
 
 ---
 
-## 5. Choosing the BAR size — and what your GPU supports
+## 5. Choosing the BAR size
 
 This matters more than anything else in the guide after the QEMU setting (see the comment
 on the `ICH9-LPC` argument in `config/macos-passthrough.xml`). The
@@ -386,7 +386,7 @@ That line is the difference between a GPU that macOS ignores and one it drives. 
 ### What OpenCore is doing for you
 
 * **AppleSMC** — `-device isa-applesmc,osk=...`; macOS refuses to boot without it.
-* **SMBIOS** — a plausible Mac model. `iMac19,1` is used here.
+* **SMBIOS** — a plausible Mac model. `iMac19,1` is a common choice for a desktop GPU.
 * **Board-id / serial** — in the OpenCore config.
 * **Kexts** — Lilu, VirtualSMC, WhateverGreen and friends for a VM.
 * **boot-args** — passed through to the kernel.
@@ -521,7 +521,7 @@ Then keep the guest on a fixed address (a libvirt DHCP reservation, or a static 
 Follow the driver's own README for the package install; this section covers only what
 differs in a VM.
 
-* **Driver version** used here: release **v1.0.13** (driver 1.0.9).
+* **Driver version**: this guide was written against release **v1.0.13** (driver 1.0.9).
 * **`/Library/GPUBundles/nvmtl/nvrm610.conf` — leave it at the shipped values.** They are
   correct once BAR1 is large. **The installer rewrites this file on every install**, so
   check it afterwards rather than assuming an edit survived.
@@ -713,7 +713,7 @@ Metal shader-cache clear, `killall Dock`, wallpaper change, display sleep/wake, 
 
 ---
 
-## Appendix A — the full domain XML, both stages
+## Appendix A. The full domain XML, both stages
 
 Everything is inline here so this file is self-contained. The same content is also in
 `config/` for direct use.
@@ -732,9 +732,10 @@ explains why it is needed and how to verify it reached QEMU.
   <uuid>9b5b38a2-6667-4962-b89f-5ed53a52e499</uuid>
   <title>macOS (OpenCore)</title>
   <description>
-    macOS guest for the NullMoth NVIDIA driver work, with the RTX 5080 Max-Q
-    (10de:2c59) and its audio function passed through. The GPU sits behind a
-    PCIe root port at guest bus 0x01, the host BAR1 is sized to 16 GiB before
+    macOS guest for the NullMoth NVIDIA driver work, with an NVIDIA GPU and its
+    audio function passed through. EDIT THE ADDRESSES: they are deliberately fake
+    so this fails loudly rather than attaching the wrong device. The GPU sits
+    behind a PCIe root port at guest bus 0x01, the host BAR1 is sized large before
     the domain starts, and the passed-through card drives the display: there is
     no emulated GPU at all (video is type='none'). The guest serial port writes
     to a file so the driver's kprintf trace can be captured from the host. For
@@ -1024,7 +1025,7 @@ explains why it is needed and how to verify it reached QEMU.
       </target>
     </serial>
 
-    <!-- NVIDIA RTX 5080 Max-Q (10de:2c59) passthrough, for the NullMoth driver.
+    <!-- The NVIDIA GPU, passed through for the NullMoth driver.
 
          BEHIND A PCIE ROOT PORT: guest bus 0x01, slot 0x00, function 0x0 for
          the GPU and function 0x1 for its audio function: the
@@ -1474,7 +1475,7 @@ last one this file cannot install anything.
 </domain>
 ```
 
-## Appendix B — supporting files in this repo
+## Appendix B. Supporting files in this repo
 
 > ### ⚠️ Every script and every config here MUST be edited before it will work
 >
@@ -1518,7 +1519,7 @@ Both sets run on the host, need root, and take the BAR bit index as an argument.
 
 ---
 
-## Appendix C — full source of every script
+## Appendix C. Full source of every script
 
 Inline so this file stands alone. The same files are in `scripts/` and `tools/`.
 

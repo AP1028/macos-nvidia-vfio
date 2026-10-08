@@ -3,9 +3,10 @@
   <uuid>9b5b38a2-6667-4962-b89f-5ed53a52e499</uuid>
   <title>macOS (OpenCore)</title>
   <description>
-    macOS guest for the NullMoth NVIDIA driver work, with the RTX 5080 Max-Q
-    (10de:2c59) and its audio function passed through. The GPU sits behind a
-    PCIe root port at guest bus 0x01, the host BAR1 is sized to 16 GiB before
+    macOS guest for the NullMoth NVIDIA driver work, with an NVIDIA GPU and its
+    audio function passed through. EDIT THE ADDRESSES: they are deliberately fake
+    so this fails loudly rather than attaching the wrong device. The GPU sits
+    behind a PCIe root port at guest bus 0x01, the host BAR1 is sized large before
     the domain starts, and the passed-through card drives the display: there is
     no emulated GPU at all (video is type='none'). The guest serial port writes
     to a file so the driver's kprintf trace can be captured from the host. For
@@ -295,7 +296,7 @@
       </target>
     </serial>
 
-    <!-- NVIDIA RTX 5080 Max-Q (10de:2c59) passthrough, for the NullMoth driver.
+    <!-- The NVIDIA GPU, passed through for the NullMoth driver.
 
          BEHIND A PCIE ROOT PORT: guest bus 0x01, slot 0x00, function 0x0 for
          the GPU and function 0x1 for its audio function: the
