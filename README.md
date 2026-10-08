@@ -561,6 +561,40 @@ Follow the driver's own README for the package install; this section covers only
 differs in a VM.
 
 
+**The tar package and 1401.app are NOT equivalent, and this is the single most important
+thing in this section.** `install.sh` — the 129-line script in `nullmoth-nvidia-*.tar.gz` —
+installs the files and rebuilds the kernel collection. That is half the job. 1401.app also
+carries `nullmoth-setup.sh`, **639 lines** that the tar does not contain at all, and it:
+
+* edits the OpenCore config — `boot-args`, `csr-active-config`, and the
+  `com.apple.iokit.IONDRVSupport` entry in `Kernel.Block` (a function exists purely to find
+  and manage that index)
+* installs `com.nullmoth.crashcheck.plist` and `com.nullmoth.recover.plist` into
+  `/Library/LaunchAgents` and `/Library/LaunchDaemons`
+* resolves which ESP actually booted by reading OpenCore's own `boot-path` NVRAM variable
+  instead of guessing
+* runs display bring-up diagnostics against `debug.nvaccel_heads_published`,
+  `debug.nvaccelfb`, `debug.nvrmfb_agdc` and `debug.nvaccel_iop`
+
+**A tar-only install therefore produces exactly this symptom: all four kexts load, BAR1 is
+placed at 16 GiB, the budget is correct, frames are generated — and the desktop never
+appears.** Nothing configured OpenCore and nothing published the display heads. If you are
+installing without 1401.app, you must run `nullmoth-setup.sh` as well; it is inside the
+release's `1401-Mac-*.zip`, at `1401.app/Contents/Resources/`, and it requires root and the
+package path as an argument.
+
+**Install against a freshly reset GPU.** Booting several macOS instances in a session leaves
+the passed-through card in a state that silently prevents `applyModeSetConfig` from running
+at all — with vfio the guest programs the physical card and a guest reboot never resets it.
+The symptom is again frames generated and a dark panel, with nothing pointing at the cause.
+Reset before a driver-phase boot:
+
+```bash
+sudo scripts/gpu-to-host.sh          # unbind vfio
+echo 1 | sudo tee /sys/bus/pci/devices/0000:01:00.0/reset
+sudo scripts/gpu-to-vfio.sh 16GiB    # rebind and re-size
+```
+
 **Before you install, check four things.** The installer writes kernel collections and loads
 unsigned kexts, so it fails in ways that look like package corruption when the real cause is
 one of these. Run all four first:
