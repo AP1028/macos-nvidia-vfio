@@ -1110,7 +1110,7 @@ explains why it is needed and how to verify it reached QEMU.
          this file does not carry it: redistributing it is what gets
          macOS-passthrough repositories taken down.
 
-         Supply your own : see "OSX-KVM: the pieces macOS needs" in the README
+         Supply your own. See "OSX-KVM: the pieces macOS needs" in the README
          for how. Until you do, the domain will start but macOS will not boot. -->
     <qemu:arg value='-device'/>
     <qemu:arg value='isa-applesmc,osk=REPLACE_WITH_YOUR_OWN_OSK'/>
@@ -1487,7 +1487,7 @@ last one this file cannot install anything.
          this file does not carry it: redistributing it is what gets
          macOS-passthrough repositories taken down.
 
-         Supply your own : see "OSX-KVM: the pieces macOS needs" in the README
+         Supply your own. See "OSX-KVM: the pieces macOS needs" in the README
          for how. Until you do, the domain will start but macOS will not boot. -->
     <qemu:arg value='-device'/>
     <qemu:arg value='isa-applesmc,osk=REPLACE_WITH_YOUR_OWN_OSK'/>
