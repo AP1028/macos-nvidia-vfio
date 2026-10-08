@@ -87,27 +87,27 @@
          Nothing is attached to any of these root ports during installation, so
          they are inert here; they are kept so that this file differs from
          macos-passthrough.xml as little as possible. -->
-    <controller hotplug='off' type='pci' index='1' model='pcie-root-port'>
+    <controller type='pci' index='1' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='1' port='0x10'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x0' multifunction='on'/>
     </controller>
-    <controller hotplug='off' type='pci' index='2' model='pcie-root-port'>
+    <controller type='pci' index='2' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='2' port='0x11'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x1'/>
     </controller>
-    <controller hotplug='off' type='pci' index='3' model='pcie-root-port'>
+    <controller type='pci' index='3' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='3' port='0x12'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x2'/>
     </controller>
-    <controller hotplug='off' type='pci' index='4' model='pcie-root-port'>
+    <controller type='pci' index='4' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='4' port='0x13'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x3'/>
     </controller>
-    <controller hotplug='off' type='pci' index='5' model='pcie-root-port'>
+    <controller type='pci' index='5' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='5' port='0x14'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x4'/>

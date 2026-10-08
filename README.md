@@ -68,7 +68,7 @@ on it being a laptop.
 
 | | |
 |---|---|
-| Host | Any Linux with QEMU ≥ 8 and libvirt. Commands here are generic; NixOS notes are called out. |
+| Host | Any Linux with libvirt, and **QEMU new enough for the machine type in the configs** (`pc-q35-10.2`, so QEMU 10.2 or a version that maps that alias). Commands here are generic; two paths in the domain XMLs are distribution-specific and are flagged where they appear. |
 | Guest | macOS 15 (Sequoia). Earlier releases should work; nothing here is version-pinned. |
 | Driver | [nullmoth/nvidia-macos-driver](https://github.com/nullmoth/nvidia-macos-driver). **Read their README first** — it covers the bare-metal case, which this guide assumes. |
 
@@ -351,8 +351,8 @@ a=int(l[1].split()[0],16); b=int(l[1].split()[1],16); print((b-a+1)/2**30,'GiB')
 **The BAR size must be set while the VM is off.** The guest driver reads the capability at
 startup; changing it under a running guest does nothing useful.
 
-`scripts/set-bar1.sh` in this repo does this. **Note its default:** pass the size
-explicitly, e.g. `sudo scripts/set-bar1.sh 17179869184`.
+`scripts/set-bar1.sh` in this repo does this. **It takes the size as an argument and will not run
+without one** — pass bytes, a `GiB`/`MiB` suffix, or a bit index: `sudo scripts/set-bar1.sh 16GiB`.
 
 ---
 
@@ -465,6 +465,21 @@ virsh -c qemu:///system define config/macos-passthrough.xml
 virsh -c qemu:///system start macos
 ```
 
+**Switching to stage 2 is not just a `define`.** The domain expects the host to have been
+prepared first — the GPU already bound to `vfio-pci`, and its BAR1 already sized — because
+the guest reads the BAR at boot and cannot be given it later:
+
+```bash
+sudo scripts/gpu-to-vfio.sh 16GiB     # unbind, size BAR1, bind vfio-pci  (section 4-5)
+virsh -c qemu:///system destroy macos
+virsh -c qemu:///system define config/macos-passthrough.xml
+virsh -c qemu:///system start macos
+```
+
+**Going back to stage 1** is the same in reverse: `destroy`, `define
+config/macos-install.xml`, `start` — after `sudo scripts/gpu-to-host.sh` to return the GPU
+to the host driver, since stage 1 does not pass anything through.
+
 ### Notes that save time
 
 * **`<video>` and the root-port placement are not cosmetic.** Getting either wrong
@@ -490,8 +505,17 @@ virsh -c qemu:///system start macos --console
 In the SPICE window (`virt-manager`, or `virt-viewer -c qemu:///system macos`):
 
 1. **OpenCore picker** → choose the macOS installer entry.
-2. **Disk Utility** → *View → Show All Devices* → select the large virtio/SATA disk →
-   **Erase** as **APFS**, GUID partition scheme.
+2. **Disk Utility** → *View → Show All Devices* → select the large SATA disk → **Erase** as
+   **APFS**, GUID partition scheme.
+
+   **That disk must exist first.** Nothing in the domain XML creates it, and libvirt will
+   refuse to start a domain whose disk image is missing. `scripts/setup-macos.sh` creates
+   it (`/var/lib/libvirt/images/macos.img`, 1 TiB thin) and registers a domain — run it once
+   before the first boot:
+
+   ```bash
+   sudo scripts/setup-macos.sh                      # creates the disk, defines stage 1
+   ```
 3. Quit Disk Utility → **Install macOS** → pick the erased disk.
 4. The installer reboots several times; OpenCore auto-selects the installer, then the
    installed volume. Let it run — the first stage alone takes 20-40 minutes.
@@ -604,7 +628,7 @@ COM1 to a file:
 
 ```xml
 <serial type='file'>
-  <source path='/tmp/macos-serial.log' append='on'/>
+  <source path='/tmp/macos-serial.log' append='off'/>
   <target type='isa-serial' port='0'><model name='isa-serial'/></target>
 </serial>
 ```
@@ -851,27 +875,27 @@ explains why it is needed and how to verify it reached QEMU.
 
          The remaining root ports (indices 2-5) are declared and currently
          unused. -->
-    <controller hotplug='off' type='pci' index='1' model='pcie-root-port'>
+    <controller type='pci' index='1' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='1' port='0x10'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x0' multifunction='on'/>
     </controller>
-    <controller hotplug='off' type='pci' index='2' model='pcie-root-port'>
+    <controller type='pci' index='2' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='2' port='0x11'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x1'/>
     </controller>
-    <controller hotplug='off' type='pci' index='3' model='pcie-root-port'>
+    <controller type='pci' index='3' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='3' port='0x12'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x2'/>
     </controller>
-    <controller hotplug='off' type='pci' index='4' model='pcie-root-port'>
+    <controller type='pci' index='4' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='4' port='0x13'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x3'/>
     </controller>
-    <controller hotplug='off' type='pci' index='5' model='pcie-root-port'>
+    <controller type='pci' index='5' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='5' port='0x14'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x4'/>
@@ -1172,19 +1196,8 @@ explains why it is needed and how to verify it reached QEMU.
          QEMU and nothing downstream will work.
 
          OSX-KVM carries exactly this line (OpenCore-Boot.sh:47) commented out.
-         Per-root-port hotplug='off' attributes on the controllers above do NOT
-         reach it : libvirt accepts them and silently discards them. --> With this property on
-         (QEMU's default) QEMU advertises ACPI hotplug slots for the PCIe
-         bridges, and macOS 15, which enumerates PCIe through ACPI,
-         IOPCIHPType = 0x21, defers enumeration of anything behind a root port
-         to runtime, so it never happens and the GPU behind the root port is
-         left with "(not mapped)" BARs and IRQ 0. With the property off, macOS
-         assigns resources to the device behind the root port normally.
-
-         OSX-KVM carries exactly this line (OpenCore-Boot.sh:47) commented out;
-         the per-root-port hotplug='off' attributes on the controllers above do
-         not reach it. This bridge-level switch is what governs the ACPI hotplug
-         slots QEMU emits, and therefore what sets macOS's IOPCIHPType. -->
+         This bridge-level switch is what governs the ACPI hotplug slots QEMU
+         emits, and therefore what sets macOS's IOPCIHPType. -->
     <qemu:arg value='-global'/>
     <qemu:arg value='ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off'/>
   </qemu:commandline>
@@ -1287,27 +1300,27 @@ last one this file cannot install anything.
          Nothing is attached to any of these root ports during installation, so
          they are inert here; they are kept so that this file differs from
          macos-passthrough.xml as little as possible. -->
-    <controller hotplug='off' type='pci' index='1' model='pcie-root-port'>
+    <controller type='pci' index='1' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='1' port='0x10'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x0' multifunction='on'/>
     </controller>
-    <controller hotplug='off' type='pci' index='2' model='pcie-root-port'>
+    <controller type='pci' index='2' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='2' port='0x11'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x1'/>
     </controller>
-    <controller hotplug='off' type='pci' index='3' model='pcie-root-port'>
+    <controller type='pci' index='3' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='3' port='0x12'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x2'/>
     </controller>
-    <controller hotplug='off' type='pci' index='4' model='pcie-root-port'>
+    <controller type='pci' index='4' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='4' port='0x13'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x3'/>
     </controller>
-    <controller hotplug='off' type='pci' index='5' model='pcie-root-port'>
+    <controller type='pci' index='5' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='5' port='0x14'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x4'/>
@@ -1528,11 +1541,24 @@ last one this file cannot install anything.
 
 > ### ⚠️ Every script and every config here MUST be edited before it will work
 >
-> Nothing in this repository knows your hardware. **At minimum you must replace the
-> GPU's host address** (the scripts and the domain XML ship with a deliberately fake
-> one, `0xff:1f.0`, so they fail loudly rather than doing something surprising to a real
-> device), **and the paths** to your OpenCore image and macOS disk. The domain will not
-> start, and the scripts will report that they cannot find the GPU, until you do.
+> Nothing in this repository knows your hardware. You must replace **all** of:
+>
+> | what | where | ships as |
+> |---|---|---|
+> | your GPU's host address | both domain XMLs; `GPU_BDF`/`GPU_AUDIO_BDF` in the scripts | a deliberately fake `ff:1f.0`, so it fails loudly rather than touching a real device |
+> | **your keyboard and mouse** | the two USB hostdevs in `macos-passthrough.xml` | the author's devices (`3151:4011`, `046d:c08b`) |
+> | **the emulator, loader and NVRAM paths** | both domain XMLs | NixOS paths (`/run/libvirt/nix-emulators/…`, `/run/libvirt/nix-ovmf/…`) |
+> | your OSX-KVM clone and disk paths | both domain XMLs; `OSX_KVM` in `setup-macos.sh` | `/path/to/OSX-KVM`, `/var/lib/libvirt/images/macos.img` |
+>
+> **The USB row is the one that strands people.** With `<video>=none` the guest has no
+> emulated console, so those two hostdevs are the *only* keyboard and mouse it gets — and
+> if they are the author's device IDs, your guest boots to a desktop you cannot touch.
+> Get yours with `lsusb`, and put your own `vendor`/`product` pairs in.
+>
+> The emulator and loader rows matter because libvirt will not start a domain whose
+> emulator path does not exist. On most distributions `qemu-system-x86_64` is enough for
+> the emulator, and the OVMF files are usually under `/usr/share/OVMF/` or
+> `/usr/share/edk2/ovmf/`.
 
 Two sets of scripts, pick either:
 
@@ -1558,7 +1584,7 @@ Both sets run on the host, need root, and take the BAR bit index as an argument.
 | `config/macos-passthrough.xml` | host | stage 2: the working passthrough configuration |
 | `scripts/gpu-to-vfio.sh` | host | unbind the GPU from its driver, set the BAR, bind vfio-pci |
 | `scripts/gpu-to-host.sh` | host | give the GPU back to the host driver |
-| `scripts/set-bar1.sh` | host | set BAR1 size (**pass the size; the default is small**) |
+| `scripts/set-bar1.sh` | host | set BAR1 size (`16GiB`, `17179869184` or bit index `14`; refuses to run without an argument) |
 | `tools/bench.sh` | guest | autonomous drag benchmark; parks/refusals/fps |
 | `tools/dragload.m` | guest | drag-load microbenchmark |
 | `tools/surfbench.m` | guest | surface throughput |
@@ -2453,12 +2479,12 @@ while IFS= read -r line; do
     printf "    driver:       ${drv_color}%s\e[0m\n" "$drv"
     printf "    iommu_group:  %s\n" "$iommu"
 
-    # Resizable BAR1: 4 GiB = passthrough size, 16 GiB = host max
+    # Resizable BAR1: 16 GiB is what both the host and the guest want
     if [ -e "/sys/bus/pci/devices/$bdf/resource1_resize" ]; then
         bar_sz=$(bar1_human "$(bar1_bytes "$bdf")")
         case "$bar_sz" in
-            "4 GiB")  printf "    BAR1:         \e[35m%s\e[0m  (passthrough size)\n" "$bar_sz" ;;
-            "16 GiB") printf "    BAR1:         \e[32m%s\e[0m  (host maximum)\n" "$bar_sz" ;;
+            "4 GiB")  printf "    BAR1:         \e[33m%s\e[0m  (small: caps the driver budget at 2 GiB)\n" "$bar_sz" ;;
+            "16 GiB") printf "    BAR1:         \e[32m%s\e[0m  (correct for passthrough)\n" "$bar_sz" ;;
             *)        printf "    BAR1:         %s\n" "$bar_sz" ;;
         esac
     fi
@@ -3676,7 +3702,7 @@ int main(int argc, char **argv) {
 #!/usr/bin/env bash
 # Provision the macOS guest's storage and register the domain with libvirt.
 #
-#   sudo ./vms/macos/setup-macos.sh
+#   sudo ./setup-macos.sh [path/to/domain.xml]
 #
 # Idempotent: re-running only creates what is missing. The disk is a thin
 # qcow2, so the 1 TiB is a ceiling, not an allocation.
@@ -3689,7 +3715,9 @@ OSX_KVM="${OSX_KVM:-/path/to/OSX-KVM}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 DISK=/var/lib/libvirt/images/macos.img
 DISK_SIZE=1T
-DOMAIN_XML=$HERE/macos.xml
+# Which domain definition to register. Defaults to the install-phase config
+# from this repo; pass the passthrough one once macOS is installed.
+DOMAIN_XML="${1:-$HERE/../config/macos-install.xml}"
 
 [ "$(id -u)" -eq 0 ] || { echo "STOP: run with sudo" >&2; exit 1; }
 
@@ -3739,5 +3767,6 @@ EOF
   article — the standard reference for section 3 and section 4.
 
 Every figure in this guide is measured, except where it is explicitly labelled an
-inference — most notably the ~7.9 GiB parked-bytes figure in section 11.2, which is
-derived from the refusal condition because no counter exposes it.
+inference. Section 11.2 is the substantive example: the driver exposes no counter for
+parked bytes, so the claim that they consume the budget is derived from the refusal
+condition rather than read from a counter, and it says so.

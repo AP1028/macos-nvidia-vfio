@@ -91,27 +91,27 @@
 
          The remaining root ports (indices 2-5) are declared and currently
          unused. -->
-    <controller hotplug='off' type='pci' index='1' model='pcie-root-port'>
+    <controller type='pci' index='1' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='1' port='0x10'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x0' multifunction='on'/>
     </controller>
-    <controller hotplug='off' type='pci' index='2' model='pcie-root-port'>
+    <controller type='pci' index='2' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='2' port='0x11'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x1'/>
     </controller>
-    <controller hotplug='off' type='pci' index='3' model='pcie-root-port'>
+    <controller type='pci' index='3' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='3' port='0x12'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x2'/>
     </controller>
-    <controller hotplug='off' type='pci' index='4' model='pcie-root-port'>
+    <controller type='pci' index='4' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='4' port='0x13'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x3'/>
     </controller>
-    <controller hotplug='off' type='pci' index='5' model='pcie-root-port'>
+    <controller type='pci' index='5' model='pcie-root-port'>
       <model name='pcie-root-port'/>
       <target chassis='5' port='0x14'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x4'/>
@@ -412,19 +412,8 @@
          QEMU and nothing downstream will work.
 
          OSX-KVM carries exactly this line (OpenCore-Boot.sh:47) commented out.
-         Per-root-port hotplug='off' attributes on the controllers above do NOT
-         reach it : libvirt accepts them and silently discards them. --> With this property on
-         (QEMU's default) QEMU advertises ACPI hotplug slots for the PCIe
-         bridges, and macOS 15, which enumerates PCIe through ACPI,
-         IOPCIHPType = 0x21, defers enumeration of anything behind a root port
-         to runtime, so it never happens and the GPU behind the root port is
-         left with "(not mapped)" BARs and IRQ 0. With the property off, macOS
-         assigns resources to the device behind the root port normally.
-
-         OSX-KVM carries exactly this line (OpenCore-Boot.sh:47) commented out;
-         the per-root-port hotplug='off' attributes on the controllers above do
-         not reach it. This bridge-level switch is what governs the ACPI hotplug
-         slots QEMU emits, and therefore what sets macOS's IOPCIHPType. -->
+         This bridge-level switch is what governs the ACPI hotplug slots QEMU
+         emits, and therefore what sets macOS's IOPCIHPType. -->
     <qemu:arg value='-global'/>
     <qemu:arg value='ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off'/>
   </qemu:commandline>

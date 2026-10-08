@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Provision the macOS guest's storage and register the domain with libvirt.
 #
-#   sudo ./vms/macos/setup-macos.sh
+#   sudo ./setup-macos.sh [path/to/domain.xml]
 #
 # Idempotent: re-running only creates what is missing. The disk is a thin
 # qcow2, so the 1 TiB is a ceiling, not an allocation.
@@ -14,7 +14,9 @@ OSX_KVM="${OSX_KVM:-/path/to/OSX-KVM}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 DISK=/var/lib/libvirt/images/macos.img
 DISK_SIZE=1T
-DOMAIN_XML=$HERE/macos.xml
+# Which domain definition to register. Defaults to the install-phase config
+# from this repo; pass the passthrough one once macOS is installed.
+DOMAIN_XML="${1:-$HERE/../config/macos-install.xml}"
 
 [ "$(id -u)" -eq 0 ] || { echo "STOP: run with sudo" >&2; exit 1; }
 
