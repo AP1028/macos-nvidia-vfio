@@ -134,8 +134,23 @@ garbage — it never generates one when the device is resourced normally.
 <summary><b>12 — the scanout binding survives a display-mode transition (breaks the session)</b> <i>[CURRENT — most serious]</i></summary>
 
 The only defect that makes the machine unusable, and the only one needing a workaround to
-use at all. See "Known bugs" §1 for the symptom progression, the four hypotheses falsified
-by measurement, and the author's own comment naming the remedy.
+use at all.
+
+**Symptom:** after a fullscreen app runs, or any display-mode transition, the panel
+alternates between live content and a dead client's last frame, or freezes with only the
+cursor moving. The cursor still moves because it is a hardware overlay that needs no
+compositing; the WindowServer itself is idle rather than blocked.
+
+**What it is not,** so it is not re-investigated: not the flip path (every flip succeeds,
+`iop_flip_stale 0`, `iop_fail 0`), not the composite (`screencapture` returns a correct,
+stable desktop throughout), not async flip recycling (`debug.nvaccel_iop_async=0` changes
+nothing), and not a late-published framebuffer (`agdc_maxfb` is 1 and
+`debug.nvaccelfb=3` does not take).
+
+**Mechanism:** the composite source changes underneath a running WindowServer, which keeps
+presenting to a surface bound before the change. The driver's own source comment names the
+remedy: *"WindowServer composites it only after a WindowServer restart"* — which is what
+fixes it in practice, at the cost of a logout.
 
 **Request:** a way to re-bind the scanout without restarting the WindowServer — an
 `nvrmctl` subcommand, or a sysctl that forces a re-bind — would turn a session-breaking
@@ -145,7 +160,7 @@ bug into a recoverable one.
 <details open>
 <summary><b>13 — the park leak eventually consumes the entire budget (quantified)</b> <i>[CURRENT]</i></summary>
 
-Mechanism and measurements in "Known bugs" §2. **Two requests:**
+Mechanism and measurements in section 11.2 of the guide. **Two requests:**
 
 1. **Expose `gVramParkedBytes` as a sysctl.** There is no way to read it today; the
    ~7.9 GiB figure is *inferred* from the refusal condition. Diagnosing this needs the

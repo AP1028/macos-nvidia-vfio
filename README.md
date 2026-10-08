@@ -600,7 +600,7 @@ compositor flips: 2436 -> 135.3 fps
 91-140 fps between runs on identical configuration; parks, refusals and ms/flip are stable.
 
 **And note what continuous-drag fps misses.** The same session reported its best-ever
-figures *while window switching was failing*. See the park leak in section 11.
+figures *while window switching was failing*. See the park leak in section 11.2.
 
 ---
 
@@ -610,7 +610,7 @@ Driver-side defects, current as of driver 1.0.9. None is fixable by configuratio
 `NVRM.kext` cannot be built from public sources, so they have to go upstream
 (Appendix C).
 
-### 12.1 A display-mode transition wedges the display — breaks the session
+### 11.1 A display-mode transition wedges the display — breaks the session
 
 **The one that matters.** After a fullscreen app runs, or any display-mode transition, the
 panel alternates between live content and a dead client's last frame — or freezes with
@@ -633,7 +633,7 @@ desktop while the panel alternates), **not** async flip recycling, and **not** a
 late-published framebuffer. The mechanism is that the composite source changes underneath
 a running WindowServer, which keeps presenting to a surface bound before the change.
 
-### 12.2 Park leak — window-switch drag lag
+### 11.2 Park leak — window-switch drag lag
 
 `kexts/NVRM/fb/nvrm-fb.cpp:1261`:
 
@@ -649,26 +649,26 @@ per window switch**, climbing, while `mapped` is 120 MB of an 8 GiB budget.
 Symptom: continuous dragging is fine; the **first drag after switching windows** stalls.
 A reboot clears it (in-kernel state); running a game accelerates it.
 
-### 12.3 Shader translation is the bottleneck
+### 11.3 Shader translation is the bottleneck
 
 `libnvmtl_translate.dylib` (Metal → SPIR-V) dominates: **2338 of ~2500 samples in
 `nvmtl_translate`** vs 85 in `Render` during gameplay. Entering a game world stalls for
 several seconds while pipelines compile, then recovers — slow, not broken.
 
-### 12.4 Upscalers produce a wrong image
+### 11.4 Upscalers produce a wrong image
 
 With `MetalFX` or `DLSS` enabled, games render a partially formed image: they render at
 reduced internal resolution and expect the upscaler to reconstruct it, which the
 translation layer does not implement. **Turn MetalFX, DLSS, Reflex and dynamic resolution
 scaling off**; render at native resolution with TAA or no AA.
 
-### 12.5 `screencapture` cannot see a game's output
+### 11.5 `screencapture` cannot see a game's output
 
 Games present through the driver's zero-copy direct scanout, bypassing the WindowServer
 composite, so `screencapture` returns only the desktop even with the game frontmost. Use
 the game's own screenshot function.
 
-### 12.6 Resolution changes are destructive
+### 11.6 Resolution changes are destructive
 
 Only the native resolution and refresh are published — **no lower refresh rate** is
 offered. Changing resolution wedges the display and can panic the kernel. Treat it as
@@ -692,38 +692,13 @@ sleep state — go to step 1.
 
 ---
 
-## 12. Troubleshooting: things that do NOT work
+## 12. Troubleshooting
 
-Do not spend time on these. Each was applied and **verified present at QEMU** before being
-ruled out — that verification step is what makes the list trustworthy.
+### If the display wedges
 
-**For the root-port / resource-assignment problem:**
+These do **not** clear it. Use the recovery ladder in section 11:
 
-* per-root-port `hotplug=off`, `x-do-not-expose-native-hotplug-cap=on`, `pref64-reserve`,
-  `mem-reserve`, `power_controller_present=off`
-* an explicit option ROM (`<rom file=...>`, confirmed via `romfile=` in the cmdline)
-* `ResizeGpuBars` at any value, `DevirtualiseMmio=true`, `phys-bits=40`,
-  `q35-pcihost.pci-hole64-size`, `x-no-mmap=on`, `npci=0x2000`
-* OpenCore `DeviceProperties` injection of the root ports' `ranges` — **tested**: the value
-  never reaches the node, because IOPCIFamily reads `ranges` from the firmware device tree,
-  not from the IORegistry
-* an SSDT overriding the root ports' `_CRS` — the route dies if QEMU declares `_CRS` as a
-  *name* rather than a *method*
-* disabling all kexts, `SSDT-DTGP` off, `MacPro7,1` + Cascade Lake platform
-* `libvirt` `<controller hotplug='off'/>` — accepted and silently dropped
-
-**For the display wedge:** Metal shader-cache clear, `killall Dock`, wallpaper change,
-display sleep/wake, `debug.nvaccelfb=3`, `debug.nvaccel_iop_async=0`, and `nvrmctl` (which
-only has `go`, `good`, `state`).
-
-**Hypotheses that were falsified by measurement** (so you do not re-tread them): memory
-pressure; a QEMU BAR-assignment bug; OpenCore writing a garbage BAR address; async flip
-recycling; an orphaned surface in the flip chain; a missing device-tree `interrupt-map`; a
-second framebuffer contending for the head; the host IOMMU refusing to map a 16 GiB BAR;
-`placeLargeBar1()` being buggy.
-
-That last one is worth stating plainly: **`placeLargeBar1()` is correct.** It simply never
-had the parent bridge it requires.
+Metal shader-cache clear, `killall Dock`, wallpaper change, display sleep/wake, `debug.nvaccelfb=3`, `debug.nvaccel_iop_async=0`, and `nvrmctl` (which only has `go`, `good`, `state`).
 
 ### Tooling traps
 
