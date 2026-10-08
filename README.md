@@ -811,6 +811,30 @@ sleep state — go to step 1.
 
 ## 12. Troubleshooting
 
+### A placeholder OSK boots but gives no display
+
+**If you substitute your own OSK (section 6) and get a macOS that boots, serves SSH, loads the
+driver and reports `bar1: PLACED` — but has no working display — check the OSK first.**
+
+macOS will start with a wrong or placeholder `osk` and look almost healthy from the inside:
+WindowServer runs, `kmutil showloaded` shows all four kexts, the driver places BAR1 correctly,
+and `applyModeSetConfig` succeeds. What it will not do is initialise the display. The
+symptoms are worth recognising because they point everywhere except the cause:
+
+| what you see | what it actually means |
+|---|---|
+| `screencapture` fails with **"could not create image from display 0"** | macOS has no display at all |
+| `system_profiler SPDisplaysDataType` lists no display | same |
+| the external monitor shows a cursor you can move, on a black screen | the viewer's cursor, not the guest's |
+| the QEMU console shows a frozen Apple logo and progress bar | the last frame the guest ever sent |
+| `virsh screenshot` returns a black 1280x800 PNG | QEMU is fine; the guest is drawing nothing |
+
+**This is not a driver problem, and no amount of driver debugging will find it.** It also
+survives an FLR, a fresh GPU reset, a WindowServer restart, and every combination of
+`<video>` model — because the fault is upstream of all of them.
+
+Substitute a real OSK and the same image, ESP and domain boot straight to a login window.
+
 ### If the display wedges
 
 These do **not** clear it. Use the recovery ladder in section 11:
