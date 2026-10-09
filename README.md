@@ -83,7 +83,6 @@ Enter firmware setup and enable, in roughly this order:
 | **Above 4G Decoding** | **Enabled** | Lets the firmware assign 64-bit BARs. Required for a large BAR. |
 | **Resizable BAR** / **Re-Size BAR Support** | **Enabled** | Required for the BAR sizing in section 5. |
 | **SR-IOV** (if present) | Enabled | Harmless, occasionally needed. |
-| **CSM** / Legacy boot | **Disabled** | UEFI boot only; OpenCore and OVMF need UEFI. |
 | **Virtualization** (VT-x / SVM) | Enabled | Obviously. |
 
 Firmware menus differ wildly; on some boards "Above 4G" is under *PCI Subsystem Settings*
