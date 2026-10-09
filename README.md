@@ -92,6 +92,25 @@ Above 4G and no Resizable BAR switch, and work fine. Check what the card actuall
 (section 5) before concluding that something is missing. On some boards a BIOS update does
 reveal settings the vendor shipped hidden, so it is worth a look if VT-d is the one absent.
 
+> **If the card has no Resizable BAR support, skip section 5 entirely.** Check first, since
+> the answer is a property of the card rather than of the board:
+>
+> ```bash
+> cat /sys/bus/pci/devices/$GPU/resource1_resize      # 0 or absent = no Resizable BAR
+> ```
+>
+> Nothing is lost by skipping — the resize would fail with `0 = unsupported`, and
+> `scripts/set-bar1.sh` would say the same. What it does cost you is the budget: without a
+> resizable BAR1 the window is fixed at whatever the firmware assigned, commonly **256 MiB**
+> on cards shipped without ReBAR (`nvidia-smi -q` reports it as `BAR1 Memory Usage`, and
+> NVIDIA's own DOCA documentation shows that 256 MiB default). By the formula in section 5 a
+> window that size leaves the driver its **192 MB fallback budget**, not the 8 GiB this guide
+> is about — enough to boot, not enough for the desktop and Metal 3 results described here.
+>
+> **This route is not tested.** Every measurement in this guide comes from a card that
+> advertises the capability, and the fallback path is read from the driver source rather than
+> exercised. Treat the paragraph above as the expected shape of the problem, not as a recipe.
+
 **Then verify from the host** (after booting Linux):
 
 ```bash
@@ -325,6 +344,10 @@ cat /sys/bus/pci/devices/$GPU/resource1_resize   # 0 = unsupported
 # -1 means "unsupported" too, in some kernels
 lspci -vv -s "${GPU#0000:}" | grep -A2 "Resizable BAR"
 ```
+
+**If that reports unsupported, there is nothing to size and you can skip this section** — but
+read the note in section 2 first, because what you are left with is a much smaller VRAM
+budget, and that path is untested here.
 
 ### What size to pick
 
