@@ -1,19 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# ============================================================================
-#  REVIEW BEFORE RUNNING. This script detects the GPU itself (via lspci), but it
-#  still assumes things about your machine:
+
+# gpu-to-vfio.guarded.sh — release the GPU from its host driver, size BAR1 for
+# the guest, and hand it to vfio-pci, with pre-flight checks.
 #
-#    * the GPU is the first NVIDIA 3D controller lspci reports -- if you have
-#      more than one, set GPU_BDF below explicitly;
-#    * the BAR sizes at the bottom of this block match the card this was written
-#      for. Check what yours advertises:  lspci -vv | grep -A2 "Resizable BAR"
-#    * it may reference host services (e.g. a GPU power manager) that do not
-#      exist on your system. Those guards degrade to no-ops, but read them.
+#   sudo ./gpu-to-vfio.guarded.sh [-s]
 #
-#  It will NOT silently damage anything: if it cannot find the GPU it stops.
-#  Still, read it before running it as root.
-# ============================================================================
+# -s makes it non-interactive: it reports and exits rather than asking.
+#
+# ⚠️ EDIT THE ADDRESSES BELOW (GPU_BDF / GPU_AUDIO_BDF) before running. This
+# script never guesses which GPU you mean, and never powers a laptop dGPU on
+# for you — waking one is vendor-specific, so do that first.
 
 red()    { echo -e "\e[31m$*\e[0m" >&2; }
 green()  { echo -e "\e[32m$*\e[0m" >&2; }
@@ -29,33 +26,18 @@ SILENT=false
 case "${1:-}" in -s) SILENT=true; shift;; esac
 
 # ── Resizable BAR sizing ─────────────────────────────────────
-# BAR1 on the dGPU is a Resizable BAR, and its SIZE decides the NullMoth
-# driver's VRAM budget:
-#
-#     budget = (fBarLen >= 4 GiB) ? fBarLen / 2 : 192 MB      (nvrm-fb.cpp)
-#
-# so a small BAR caps the driver at 192 MB no matter how much VRAM the card
-# has. Set it as large as the card advertises: 16 GiB gives an 8 GiB budget.
+# BAR1 on the dGPU is a Resizable BAR. A large one breaks VM passthrough:
+# at 8 GiB and above the guest firmware places it on a non-canonical
+# address (0x8508000000000000 — a 32-bit base written into the high dword
+# of a 64-bit BAR), which QEMU/KVM reject, so the domain either fails to
+# start or the guest ends up with no usable aperture. 4 GiB is the largest
+# size that still places correctly. Shrink for the VM, restore max for host.
 #
 # resource1_resize takes a BIT INDEX, not a byte count:
 #   0=1MB 1=2MB 2=4MB ... 10=1GiB 11=2GiB 12=4GiB 13=8GiB 14=16GiB
 # so the size in bytes is 2^(idx+20).
-#
-# Keep BAR1 large. For this to work the GPU must sit BEHIND A PCIE ROOT PORT
-# (guest bus 0x01), and QEMU must stop advertising ACPI hotplug for PCI bridges:
-# QEMU advertising ACPI hotplug for PCI bridges:
-#
-#     -global ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off
-#
-# Without that property macOS assigns a root-port device no resources at all
-# (the root ports advertise zero-size `ranges`). With it, macOS resources the
-# card, the driver places its own 16 GiB BAR, and the budget goes 192 MB ->
-# 8 GiB. MEASURED: bar1@0x14:0x1000000000+0x400000000, budget 8589934592.
-#
-# Do not lower this. A small BAR is not a requirement of macOS; it is what you
-# are stuck with when the guest cannot present the normal Mac topology.
-BAR_IDX_VFIO=14   # 16 GiB — maximum this card advertises; gives an 8 GiB budget
-BAR_IDX_HOST=14   # 16 GiB — the same; kept separate as they need not match
+BAR_IDX_VFIO=12   # 4 GiB — largest size that passes through correctly
+BAR_IDX_HOST=14   # 16 GiB — the maximum this card advertises
 
 # BAR1 size in bytes for a BDF (0 if unassigned or no resizable BAR1)
 bar1_bytes() {
@@ -101,14 +83,41 @@ ensure_bar1_for_vfio() {
         echo "$dev" > "/sys/bus/pci/drivers/$drv/unbind" 2>/dev/null || true
         sleep 0.5
     fi
-    set_bar1 "$dev" "$BAR_IDX_VFIO" "16 GiB for passthrough"
+    set_bar1 "$dev" "$BAR_IDX_VFIO" "4 GiB for passthrough"
     echo "vfio-pci" > "/sys/bus/pci/devices/$dev/driver_override" 2>/dev/null || true
     echo "$dev" > /sys/bus/pci/drivers_probe 2>/dev/null || true
 }
 
+
 # ── GPU-holder helpers (used by the force path) ──────────────
-# System daemons are tolerated here — they are stopped via systemd later.
+# NVIDIA daemons are tolerated here — they are stopped via systemd later.
 IGNORE_PROCS="nvidia-powerd|nvidia-persistenced"
+
+# The GPU's DRM nodes. A compositor that has merely *opened* the card — without
+# driving any display on it — pins nvidia_drm through /dev/dri/cardN, and no
+# service check or /dev/nvidia* scan sees that. Leaving it out is how a handoff
+# decides the GPU is free, unbinds it, and then wedges the kernel in rmmod.
+#
+# Node names come from `ls` and ownership from `readlink`, with no existence
+# test: on some systems an LSM answers ENOENT for the passed-through card, so
+# `[ -e /dev/dri/card0 ]` and `[ -e /sys/class/drm/card0 ]` both report false
+# while `ls` lists them.
+gpu_drm_nodes() {
+    local node link bdf out=""
+    for node in $(ls /sys/class/drm/ 2>/dev/null); do
+        case "$node" in
+            card[0-9]*|renderD*) ;;
+            *) continue;;
+        esac
+        case "$node" in *-*) continue;; esac          # connector entries
+        link=$(readlink -f "/sys/class/drm/$node/device" 2>/dev/null) || continue
+        bdf="${link##*/}"
+        case "$bdf" in
+            "$GPU_BUSDEV"*) out="$out /dev/dri/$node";;
+        esac
+    done
+    echo "${out# }"
+}
 
 # List live (non-zombie) PIDs holding NVIDIA devices
 gpu_holders() {
@@ -117,8 +126,34 @@ gpu_holders() {
         [ -e "$nvdev" ] || continue
         pids="$pids $(fuser "$nvdev" 2>/dev/null || true)"
     done
+    # The card itself: through its DRM nodes (a compositor, a game) and through
+    # the PCI device. Without the DRM nodes the usual desktop-session holder is
+    # invisible here, which is how a handoff unbinds a GPU that is still in use.
+    for node in $(gpu_drm_nodes); do
+        pids="$pids $(fuser "$node" 2>/dev/null || true)"
+    done
     for dev in "${ALL_DEVS[@]}"; do
         pids="$pids $(fuser "/sys/bus/pci/devices/$dev" 2>/dev/null || true)"
+    done
+    # fuser can report nothing at all when an LSM answers ENOENT on device
+    # paths, so the same holders are also collected by walking /proc. The
+    # alternation is written out in the case syntax on purpose: `case $x in
+    # $pat)` with pat="a|b" is one literal pattern and never matches.
+    for p in /proc/[0-9]*; do
+        local pid=${p#/proc/}
+        [ -d "$p/fd" ] || continue
+        for f in "$p"/fd/*; do
+            local t
+            t=$(readlink "$f" 2>/dev/null) || continue
+            case "$t" in
+                /dev/nvidia*)
+                    pids="$pids $pid"; break;;
+                /dev/dri/*)
+                    case " $(gpu_drm_nodes) " in
+                        *" $t "*) pids="$pids $pid"; break;;
+                    esac;;
+            esac
+        done
     done
     local out=""
     for pid in $pids; do
@@ -126,62 +161,30 @@ gpu_holders() {
         if echo "$pname" | grep -qE "$IGNORE_PROCS"; then continue; fi
         state=$(ps -o stat= -p "$pid" 2>/dev/null || true)
         case "$state" in *Z*|*z*) continue;; esac
+        case " $out " in *" $pid "*) continue;; esac
         out="$out $pid"
     done
     echo "$out"
 }
 
-# ── Discover / wake NVIDIA dGPU ──────────────────────────────
-ASUS_DGPU_DISABLE=/sys/devices/platform/asus-nb-wmi/dgpu_disable
-info "Discovering NVIDIA dGPU..."
+# ── GPU address: yours, not a guess ──────────────────────────
+# ⚠️ EDIT THESE. The addresses below are DELIBERATELY FAKE (ff:1f.0 is not a
+# real device) so a copy-paste fails loudly instead of acting on the wrong GPU.
+# Find yours with:  lspci -nn | grep -i -e nvidia -e vga
+# It looks like 0000:01:00.0 -> use that. The audio function is .1 on the same
+# bus/slot. This script never guesses, and never powers a laptop dGPU on for
+# you: waking one is vendor-specific (on ASUS it is dgpu_disable, elsewhere a
+# MUX or vendor tool), so do that yourself before running this.
+GPU_BDF="${GPU_BDF:-0000:ff:1f.0}"
+GPU_AUDIO_BDF="${GPU_AUDIO_BDF:-0000:ff:1f.1}"
+info "Checking the configured GPU..."
 
-GPU_BDF=$(lspci -D -d 10DE::0300 2>/dev/null | awk 'NR==1{print $1}')
-WAS_OFF=false
-if [ -z "$GPU_BDF" ]; then
-    info "dGPU is off — powering on for VFIO passthrough..."
-
-    # Clear ASUS dgpu_disable if set
-    if [ -f "$ASUS_DGPU_DISABLE" ] && grep -q 1 "$ASUS_DGPU_DISABLE" 2>/dev/null; then
-        info "Clearing dgpu_disable..."
-        tries=0
-        while :; do
-            if echo 0 > "$ASUS_DGPU_DISABLE" 2>/dev/null; then
-                sleep 0.1
-                if grep -q 0 "$ASUS_DGPU_DISABLE" 2>/dev/null; then
-                    ok "dgpu_disable = 0"
-                    break
-                fi
-            fi
-            tries=$((tries + 1))
-            [ "$tries" -ge 4 ] && { fail "Could not clear dgpu_disable"; exit 1; }
-            sleep 0.5
-        done
-    fi
-
-    # Power on any slot that was off
-    for slot in /sys/bus/pci/slots/*/; do
-        [ -e "$slot/power" ] || continue
-        power=$(tr -dc '01' < "$slot/power" 2>/dev/null || true)
-        if [ "$power" = "0" ]; then
-            echo 1 > "$slot/power" 2>/dev/null || true
-        fi
-    done
-
-    # Rescan PCI bus until GPU appears
-    info "Rescanning PCI bus..."
-    for _ in $(seq 1 16); do
-        echo 1 > /sys/bus/pci/rescan 2>/dev/null || true
-        sleep 0.5
-        GPU_BDF=$(lspci -D -d 10DE::0300 2>/dev/null | awk 'NR==1{print $1}')
-        [ -n "$GPU_BDF" ] && break
-    done
-    if [ -z "$GPU_BDF" ]; then
-        red "ERROR: dGPU did not appear after power-on."
-        exit 1
-    fi
-    ok "dGPU powered on at $GPU_BDF"
-    WAS_OFF=true
-fi
+for dev in "$GPU_BDF" "$GPU_AUDIO_BDF"; do
+    [ -e "/sys/bus/pci/devices/$dev" ] && continue
+    red "ERROR: $dev does not exist on this machine."
+    red "Edit GPU_BDF/GPU_AUDIO_BDF at the top of this script."
+    exit 1
+done
 GPU_BUSDEV="${GPU_BDF%.*}"
 
 # Gather all NVIDIA functions on this device and their drivers
@@ -229,7 +232,6 @@ if $all_vfio; then
 fi
 
 # ── GPU was off: skip all checks, go straight to binding ────
-if ! $WAS_OFF; then
 
 # ── Check: GPU function on something unexpected? ─────────────
 mixed=false
@@ -306,11 +308,22 @@ for dev in "${ALL_DEVS[@]}"; do
 done
 
 # ── Check for active graphical sessions ──────────────────────
+count_seat_sessions() {
+    local s class seat out=""
+    for s in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
+        class=$(loginctl show-session "$s" -p Class --value 2>/dev/null || true)
+        seat=$(loginctl show-session "$s" -p Seat --value 2>/dev/null || true)
+        case "$class" in manager|greeter) continue;; esac
+        case "$seat" in ""|-|*"("* ) continue;; esac
+        case " $out " in *" $s "*) continue;; esac
+        out="$out $s"
+    done
+    echo "$out"
+}
+
 HAS_SEAT=false
 if command -v loginctl &>/dev/null; then
-    if loginctl list-sessions --no-legend 2>/dev/null | grep -v "tty" | grep -q "seat0"; then
-        HAS_SEAT=true
-    fi
+    [ -n "$(count_seat_sessions)" ] && HAS_SEAT=true
 fi
 
 if ! $has_procs && ! $HAS_DISPLAY && ! $HAS_SEAT; then
@@ -419,7 +432,6 @@ for mod in nvidia_drm nvidia_modeset nvidia_uvm nvidia nvidia_wmi_ec_backlight; 
 done
 sleep 0.5
 
-fi   # end of $WAS_OFF guard
 
 # ── Bind to vfio-pci ─────────────────────────────────────────
 info "Binding NVIDIA functions to vfio-pci..."
@@ -462,7 +474,7 @@ for dev in "${ALL_DEVS[@]}"; do
     fi
 
     # BAR1 must be programmed while the device is unbound
-    set_bar1 "$dev" "$BAR_IDX_VFIO" "16 GiB for passthrough"
+    set_bar1 "$dev" "$BAR_IDX_VFIO" "4 GiB for passthrough"
 
     # Pin to vfio-pci and probe
     if ! echo "vfio-pci" > "/sys/bus/pci/devices/$dev/driver_override" 2>/dev/null; then

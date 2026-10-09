@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# ============================================================================
-#  REVIEW BEFORE RUNNING. This script detects the GPU itself (via lspci), but it
-#  still assumes things about your machine:
+
+# gpu-to-host.guarded.sh — give the GPU back to its host driver and restore the
+# full BAR1, with checks.
 #
-#    * the GPU is the first NVIDIA 3D controller lspci reports -- if you have
-#      more than one, set GPU_BDF below explicitly;
-#    * the BAR sizes at the bottom of this block match the card this was written
-#      for. Check what yours advertises:  lspci -vv | grep -A2 "Resizable BAR"
-#    * it may reference host services (e.g. a GPU power manager) that do not
-#      exist on your system. Those guards degrade to no-ops, but read them.
+#   sudo ./gpu-to-host.guarded.sh [-s]
 #
-#  It will NOT silently damage anything: if it cannot find the GPU it stops.
-#  Still, read it before running it as root.
-# ============================================================================
+# Run this after shutting the VM down.
+#
+# ⚠️ EDIT THE ADDRESSES BELOW (GPU_BDF / GPU_AUDIO_BDF) before running. This
+# script never guesses which GPU you mean.
 
 red()    { echo -e "\e[31m$*\e[0m" >&2; }
 green()  { echo -e "\e[32m$*\e[0m" >&2; }
@@ -28,20 +24,23 @@ if [ "$EUID" -ne 0 ]; then exec sudo "$0" "$@"; fi
 SILENT=false
 case "${1:-}" in -s) SILENT=true; shift;; esac
 
-# ── Discover / wake NVIDIA dGPU ──────────────────────────────
-info "Discovering NVIDIA dGPU..."
 
-GPU_BDF=$(lspci -D -d 10DE::0300 2>/dev/null | awk 'NR==1{print $1}')
-if [ -z "$GPU_BDF" ]; then
-    # The dGPU is not visible at all: on laptops it is usually powered down, and
-    # waking it is vendor-specific (on ASUS it is the dgpu_disable attribute, and
-    # on some machines the GPU only appears once the MUX or the vendor tool
-    # enables it). This script cannot do that portably, so it stops here rather
-    # than exec'ing something that may not exist.
-    fail "No NVIDIA GPU visible on the PCI bus."
-    echo "  Power it on first (vendor-specific: check for a dgpu_disable or" >&2
-    echo "  similar attribute under /sys/devices/platform/, or your laptop's" >&2
-    echo "  GPU mode setting), then re-run this script." >&2
+# ── GPU address: yours, not a guess ──────────────────────────
+# ⚠️ EDIT THESE. The addresses below are DELIBERATELY FAKE (ff:1f.0 is not a
+# real device) so a copy-paste fails loudly instead of acting on the wrong GPU.
+# Find yours with:  lspci -nn | grep -i -e nvidia -e vga
+# It looks like 0000:01:00.0 -> use that. The audio function is .1 on the same
+# bus/slot. This script never guesses, and never powers a laptop dGPU on for
+# you: waking one is vendor-specific, so do that yourself before running this.
+GPU_BDF="${GPU_BDF:-0000:ff:1f.0}"
+GPU_AUDIO_BDF="${GPU_AUDIO_BDF:-0000:ff:1f.1}"
+info "Checking the configured GPU..."
+
+if [ ! -e "/sys/bus/pci/devices/$GPU_BDF" ]; then
+    red "ERROR: $GPU_BDF does not exist on this machine."
+    echo "  Edit GPU_BDF/GPU_AUDIO_BDF at the top of this script." >&2
+    echo "  If the GPU is powered down on a laptop, enable it with your" >&2
+    echo "  vendor's GPU-mode setting first, then re-run." >&2
     exit 1
 fi
 GPU_BUSDEV="${GPU_BDF%.*}"
@@ -135,15 +134,10 @@ for mod in nvidia nvidia_modeset nvidia_uvm nvidia_drm; do
 done
 
 # ── Resizable BAR sizing (mirror of gpu-to-vfio) ─────────────
-# Keep BAR1 as large as the card advertises for passthrough: the NullMoth
-# driver's VRAM budget is fBarLen/2, so a big BAR is the point (16 GiB ->
-# 8 GiB budget). resource1_resize takes a BIT INDEX:
-# 8=256MiB, 12=4GiB, 13=8GiB, 14=16GiB.
-#
-# A small BAR is not a macOS requirement. Keep BAR1 large: with the GPU behind a PCIe
-# root port and -global ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off,
-# a 16 GiB BAR is assigned and placed by the driver itself.
-BAR_IDX_VFIO=14   # 16 GiB — must match gpu-to-vfio; see the note there
+# gpu-to-vfio shrinks BAR1 to 4 GiB because a larger one breaks guest
+# passthrough. Restore the maximum here so the host gets the full aperture
+# back. resource1_resize takes a BIT INDEX: 12=4GiB, 14=16GiB.
+BAR_IDX_VFIO=12   # 4 GiB
 BAR_IDX_HOST=14   # 16 GiB — the maximum this card advertises
 
 bar1_bytes() {

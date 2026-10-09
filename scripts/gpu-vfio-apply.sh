@@ -16,10 +16,8 @@ set -euo pipefail
 # ============================================================================
 
 red()    { echo -e "\e[31m$*\e[0m" >&2; }
-green()  { echo -e "\e[32m$*\e[0m" >&2; }
 yellow() { echo -e "\e[33m$*\e[0m" >&2; }
 info()   { echo -e "\e[34m[INFO]\e[0m  $*" >&2; }
-ok()     { echo -e "\e[32m[OK]\e[0m    $*" >&2; }
 
 if [ "$EUID" -ne 0 ]; then exec sudo "$0" "$@"; fi
 
@@ -32,8 +30,27 @@ if [ ! -f "$PENDING" ]; then
 fi
 
 # ── Warn about active graphical sessions ─────────────────────
+# Count sessions by property, not by scraping the table. `grep -v tty` on that
+# table discards the session that matters: a Wayland or X session is class=user
+# and *does* carry a TTY (tty2 here), so filtering on the word "tty" threw away
+# exactly the session this warning exists to find.
+count_seat_sessions() {
+    local s class seat v out=""
+    for s in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
+        class=$(loginctl show-session "$s" -p Class --value 2>/dev/null || true)
+        seat=$(loginctl show-session "$s" -p Seat --value 2>/dev/null || true)
+        case "$class" in manager|greeter) continue;; esac
+        case "$seat" in ""|-|*"("* ) continue;; esac
+        case " $out " in *" $s "*) continue;; esac
+        out="$out $s"
+    done
+    echo "$out"
+}
+
 if command -v loginctl &>/dev/null; then
-    ACTIVE=$(loginctl list-sessions --no-legend 2>/dev/null | grep -v "tty" | grep "seat0" | wc -l)
+    SEAT_SESSIONS=$(count_seat_sessions)
+    ACTIVE=0
+    [ -n "$SEAT_SESSIONS" ] && ACTIVE=$(wc -w <<<"$SEAT_SESSIONS")
     if [ "$ACTIVE" -gt 0 ]; then
         yellow "WARNING: ${ACTIVE} active graphical session(s) detected."
         yellow "It's safer to log out of your desktop first."

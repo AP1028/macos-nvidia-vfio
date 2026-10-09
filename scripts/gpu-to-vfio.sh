@@ -24,6 +24,17 @@ set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 1; }
 
 BAR_IDX="${1:-14}"
+
+# Refuse to run on an address that is not present. The shipped GPU_BDF is a
+# deliberate placeholder, and without this check the bind loop below silently
+# skips a nonexistent device while the verification loop prints nothing and
+# still exits 0 — reporting success for a GPU that was never touched.
+if [ ! -e "/sys/bus/pci/devices/$GPU_BDF" ]; then
+    echo "STOP: $GPU_BDF does not exist on this machine." >&2
+    echo "      Edit GPU_BDF/GPU_AUDIO_BDF at the top of this script (find yours with: lspci -nn | grep -i nvidia)." >&2
+    exit 1
+fi
+
 DEVS=("$GPU_BDF")
 [ -e "/sys/bus/pci/devices/$GPU_AUDIO_BDF" ] && DEVS+=("$GPU_AUDIO_BDF")
 
@@ -91,10 +102,13 @@ done
 echo
 echo "verifying:"
 rc=0
+seen=0
 for dev in "${DEVS[@]}"; do
     [ -e "/sys/bus/pci/devices/$dev" ] || continue
+    seen=$(( seen + 1 ))
     drv=$(readlink "/sys/bus/pci/devices/$dev/driver" 2>/dev/null | xargs -r basename || echo none)
     printf '  %s -> %s\n' "$dev" "$drv"
     [ "$drv" = "vfio-pci" ] || rc=1
 done
+[ "$seen" -gt 0 ] || { echo "FAILED — no device was checked (wrong address?)" >&2; exit 1; }
 [ "$rc" -eq 0 ] && echo "OK — the GPU is ready to pass through" || { echo "FAILED — check dmesg" >&2; exit 1; }

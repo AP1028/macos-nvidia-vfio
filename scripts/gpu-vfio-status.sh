@@ -15,11 +15,7 @@ set -euo pipefail
 #  Still, read it before running it as root.
 # ============================================================================
 
-red()    { echo -e "\e[31m$*\e[0m" >&2; }
-green()  { echo -e "\e[32m$*\e[0m" >&2; }
-yellow() { echo -e "\e[33m$*\e[0m" >&2; }
 cyan()   { echo -e "\e[36m$*\e[0m" >&2; }
-info()   { echo -e "\e[34m[INFO]\e[0m  $*" >&2; }
 
 echo ""
 cyan "═════════════════════════════════════════════"
@@ -109,9 +105,13 @@ fi
 echo "── NVIDIA Kernel Modules ──"
 echo ""
 has_mod=false
+# NOTE: `lsmod | grep -q` reports a false negative under `set -o pipefail`:
+# grep -q exits at the first match, lsmod dies of SIGPIPE, and the pipeline
+# returns 141. Capture the list once and match against it instead.
+LSMOD_LIST=$(lsmod 2>/dev/null || true)
 for mod in nvidia_drm nvidia_modeset nvidia_uvm nvidia; do
-    if lsmod 2>/dev/null | grep -q "^$mod "; then
-        count=$(lsmod 2>/dev/null | grep "^$mod " | awk '{print $3}')
+    if grep -q "^$mod " <<<"$LSMOD_LIST"; then
+        count=$(awk -v m="$mod" '$1==m {print $3}' <<<"$LSMOD_LIST")
         printf "  \e[32m%-20s  loaded  (used by: %s)\e[0m\n" "$mod" "${count:-0}"
         has_mod=true
     fi
@@ -126,8 +126,8 @@ echo "── VFIO Kernel Modules ──"
 echo ""
 has_mod=false
 for mod in vfio_pci vfio_pci_core vfio_iommu_type1 vfio; do
-    if lsmod 2>/dev/null | grep -q "^$mod "; then
-        count=$(lsmod 2>/dev/null | grep "^$mod " | awk '{print $3}')
+    if grep -q "^$mod " <<<"$LSMOD_LIST"; then
+        count=$(awk -v m="$mod" '$1==m {print $3}' <<<"$LSMOD_LIST")
         printf "  \e[35m%-20s  loaded  (used by: %s)\e[0m\n" "$mod" "${count:-0}"
         has_mod=true
     fi

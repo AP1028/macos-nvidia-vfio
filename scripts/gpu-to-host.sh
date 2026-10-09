@@ -30,6 +30,14 @@ bar1_bytes() {
 }
 
 DEVS=("$GPU_BDF")
+# Refuse to run on an address that is not present: the shipped GPU_BDF is a
+# deliberate placeholder, and every loop below would otherwise skip it and this
+# script would report nothing while doing nothing.
+if [ ! -e "/sys/bus/pci/devices/$GPU_BDF" ]; then
+    echo "STOP: $GPU_BDF does not exist on this machine." >&2
+    echo "      Edit GPU_BDF/GPU_AUDIO_BDF at the top of this script (find yours with: lspci -nn | grep -i nvidia)." >&2
+    exit 1
+fi
 [ -e "/sys/bus/pci/devices/$GPU_AUDIO_BDF" ] && DEVS+=("$GPU_AUDIO_BDF")
 
 # Release from vfio-pci. driver_override first, as always.
@@ -59,8 +67,13 @@ fi
 # Hand back to the host driver.
 modprobe "$HOST_DRIVER" 2>/dev/null || true
 for dev in "${DEVS[@]}"; do
-    [ -e "/sys/bus/pci/devices/$dev" ] || continue
-    if [ -e "/sys/bus/pci/drivers/$HOST_DRIVER/bind" ]; then
+    sysfs="/sys/bus/pci/devices/$dev"
+    [ -e "$sysfs" ] || continue
+    # Let the kernel pick the right driver for THIS function. Binding every
+    # device to $HOST_DRIVER is wrong for the GPU's audio function, which
+    # belongs to snd_hda_intel: it cannot bind to nvidia, and it is otherwise
+    # left with no driver at all (no host audio) until the next reboot.
+    if [ "$dev" = "$GPU_BDF" ] && [ -e "/sys/bus/pci/drivers/$HOST_DRIVER/bind" ]; then
         echo "$dev" > "/sys/bus/pci/drivers/$HOST_DRIVER/bind" 2>/dev/null || true
     else
         echo "$dev" > /sys/bus/pci/drivers_probe 2>/dev/null || true
