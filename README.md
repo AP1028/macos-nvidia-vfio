@@ -7,43 +7,8 @@ It is written from a machine where this works end to end. Everything here was me
 where something is an inference rather than a measurement, it says so.
 
 **Result:** driver-placed **16 GiB BAR**, **8 GiB VRAM budget**, GPU-composited desktop,
-Metal 3 for applications. (The first working version of this setup had a 192 MB budget;
-getting past that is what most of the later sections are about.)
-
----
-
-## ⚠️ READ THIS FIRST — three traps that look exactly like driver failure
-
-> **Each of these produces a macOS that boots, serves SSH, loads all four driver kexts,
-> places BAR1 at 16 GiB with the full 8 GiB budget, reports `applyModeSetConfig -> 1` — and
-> has no display at all.** They sit *upstream* of the driver, so no amount of driver
-> debugging will find them. Check all three before debugging anything else.
-
-**1. A wrong or placeholder `osk` = no display, and it never says so.** macOS starts, looks
-healthy from the inside, and never initialises a display. The cursor you can move on the
-black screen belongs to your **viewer**, not the guest. `screencapture` fails with *"could
-not create image from display 0"*, `system_profiler` lists no display, and `virsh
-screenshot` returns a black frame. **It survives an FLR, a GPU reset, a WindowServer
-restart and every `<video>` model.** → **Substitute a real OSK (section 6) before testing
-anything.** A redacted copy of the domain XML, kept for sharing, will not boot a display.
-
-**2. SIP must be off *before* `install.sh` runs.** Otherwise it dies at *"back up kernel
-collection / Operation not permitted"*, which reads as a corrupt package or a bad download.
-It is neither — the kernel collection carries the SIP `restricted` flag and root cannot read
-it with SIP on. → **Set `csr-active-config` in OpenCore, reboot, confirm `csrutil status`
-says `disabled`, and only then install.**
-
-**3. Reset the GPU before a driver-phase boot.** With vfio the guest programs the physical
-card and **a guest reboot does not reset it**, so booting several macOS images in one
-session leaves state that silently stops `applyModeSetConfig` from running — frames
-generated, panel dark, nothing pointing at the cause. → **FLR between boots.** See section 9.
-
-**And one more, about the two installers:** `nullmoth-nvidia-*.tar.gz` ships `install.sh`
-(**129 lines** — files and kernel collection). **1401.app carries a second script,
-`nullmoth-setup.sh` (639 lines), that the tar does not contain at all** — it writes the
-OpenCore config, installs the recovery daemon, and publishes the display heads. **A
-tar-only install gives four loaded kexts and no desktop.** Section 9 phases this by what
-your display does.
+Metal 3 for applications. A small BAR caps the VRAM budget at 192 MB; section 5 is about
+sizing it correctly.
 
 ---
 
@@ -165,7 +130,7 @@ On most other distributions, add them to the kernel command line in your bootloa
 
 > **Further reading:** the [Arch Wiki PCI passthrough via OVMF](https://wiki.archlinux.org/title/PCI_passthrough_via_OVMF) article is the
 > standard reference for everything in this section and the next, and covers cases this
-guide does not (multi-GPU hosts, `iommu=pt` trade-offs, ACS overrides).
+> guide does not (multi-GPU hosts, `iommu=pt` trade-offs, ACS overrides).
 
 **Optional — bind the GPU to vfio-pci at boot.** Only needed if the GPU is claimed by a
 driver before you can intervene (or if it is the host's only GPU). Add:
@@ -184,7 +149,8 @@ lspci -nn | grep -i -e nvidia -e vga
 
 **Do not add `pcie_acs_override=downstream,multifunction` unless you must.** It exists to
 split IOMMU groups so devices can be isolated, but it weakens the isolation guarantee and
-is a security trade-off. Check your groups first (§ below); most modern boards do not need it.
+is a security trade-off. Check your groups first ([Verify IOMMU groups](#verify-iommu-groups));
+most modern boards do not need it.
 
 ### Verify IOMMU groups
 
@@ -301,11 +267,11 @@ echo "$GPU" > /sys/bus/pci/drivers/nvidia/bind
 
 `scripts/gpu-to-vfio.sh` and `scripts/gpu-to-host.sh` do the above. If you would rather
 have the checks, `scripts/gpu-to-vfio.guarded.sh` and `scripts/gpu-to-host.guarded.sh`
-add them: they refuse to unbind while anything holds the GPU open, detect a powered-off
-GPU, verify the binding afterwards, and offer a "schedule this for after your next
-logout" path for when the GPU is driving your desktop. See
+add them: they refuse to unbind while anything holds the GPU open, verify the binding
+afterwards, and offer a "schedule this for after your next logout" path for when the GPU is
+driving your desktop. See
 [Appendix B](#appendix-b-supporting-files-in-this-repo) for both sets, and **edit the
-addresses at the top of whichever you use.**
+addresses at the top of whichever you use** — none of them guesses which GPU you mean.
 
 ### Warning: unbinding a busy GPU can hang the kernel
 
@@ -327,9 +293,9 @@ card is usually idle and this is trivial.
 
 ## 5. Choosing the BAR size
 
-This matters more than anything else in the guide after the QEMU setting (see the comment
-on the `ICH9-LPC` argument in `config/macos-passthrough.xml`). The
-driver's VRAM budget is derived from BAR1:
+Only one QEMU setting matters more: the `ICH9-LPC` argument in
+`config/macos-passthrough.xml` (see the comment there). The driver's VRAM budget is derived
+from BAR1:
 
 ```c
 // kexts/NVRM/fb/nvrm-fb.cpp
@@ -361,9 +327,11 @@ lspci -vv -s "${GPU#0000:}" | grep -A2 "Resizable BAR"
 
 ### What size to pick
 
-**Rule of thumb: BAR1 ≈ the card's VRAM, rounded down to a power of two.** NVIDIA exposes
-a BAR1 as large as its memory (or the largest supported power of two), which is why
-Resizable BAR exists at all.
+**Rule of thumb: pick the largest size the card advertises — normally the card's VRAM,
+rounded down to a power of two.** NVIDIA exposes a BAR1 as large as its memory (or the
+largest supported power of two), which is why Resizable BAR exists at all. There is no
+measured downside to the largest size, and a large BAR is the entire point: it is what gives
+the driver room to work.
 
 | your GPU's VRAM | try | expected budget |
 |---|---|---|
@@ -372,9 +340,6 @@ Resizable BAR exists at all.
 | 12 GB (RTX 4070, 3060) | 8 GiB (bit 13) | 4 GiB |
 | 8 GB (RTX 4060, 3070) | 8 GiB (bit 13) | 4 GiB |
 | 4-6 GB | 4 GiB (bit 12) | 2 GiB |
-
-**Pick the largest size the card advertises.** There is no measured downside, and a
-large BAR is the entire point: it is what gives the driver room to work.
 
 Verify after setting it:
 
@@ -386,8 +351,12 @@ a=int(l[1].split()[0],16); b=int(l[1].split()[1],16); print((b-a+1)/2**30,'GiB')
 **The BAR size must be set while the VM is off.** The guest driver reads the capability at
 startup; changing it under a running guest does nothing useful.
 
-`scripts/set-bar1.sh` in this repo does this. **It takes the size as an argument and will not run
-without one** — pass bytes, a `GiB`/`MiB` suffix, or a bit index: `sudo scripts/set-bar1.sh 16GiB`.
+**This is the host-side setting only.** `resource1_resize` sizes the host's BAR1 before the
+guest starts; OpenCore's `ResizeGpuBars` must leave that BAR alone rather than size it a
+second time — section 9 gives its value.
+
+`scripts/set-bar1.sh` does this. **It takes the size as an argument and will not run without
+one** — pass bytes, a `GiB`/`MiB` suffix, or a bit index: `sudo scripts/set-bar1.sh 16GiB`.
 
 ---
 
@@ -409,14 +378,15 @@ dmg2img BaseSystem.dmg BaseSystem.img
 ls OpenCore/OpenCore.qcow2
 ```
 
-**Read `OpenCore-Boot.sh`.** It is the reference invocation, and it is where the single
-most important setting in this guide was eventually found — **commented out**:
+**Read `OpenCore-Boot.sh`.** It is the reference invocation, and it carries the single most
+important setting in this guide — **commented out**:
 
 ```
 OpenCore-Boot.sh:47:  # -global ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off
 ```
 
-That line is the difference between a GPU that macOS ignores and one it drives. See the comment on the `ICH9-LPC` argument in `config/macos-passthrough.xml`.
+That line is the difference between a GPU that macOS ignores and one it drives. See the
+comment on the `ICH9-LPC` argument in `config/macos-passthrough.xml`.
 
 ### What OpenCore is doing for you
 
@@ -433,9 +403,15 @@ That line is the difference between a GPU that macOS ignores and one it drives. 
   commit it to a public repository** — keep it in your local copy of the domain XML, which
   is where this guide expects it.
 
-  **Symptom if you skip this:** the domain starts normally and macOS hangs or fails very
-  early, with nothing useful in the guest log — it looks like a bad installer rather than a
-  missing SMC key.
+  > **A placeholder `osk` boots macOS and gives you no display.** macOS starts, serves SSH,
+  > loads its kexts and reports a correctly placed BAR1 — and never initialises a display.
+  > The cursor on the black screen is your viewer's. `screencapture` fails with "could not
+  > create image from display 0", `system_profiler` lists no display, and `virsh screenshot`
+  > returns a black frame. Nothing in the guest log points at the SMC key, and the failure
+  > survives an FLR, a GPU reset, a WindowServer restart and every `<video>` model — the
+  > fault is upstream of the driver, so **no amount of driver debugging will find it.** The
+  > `REPLACE_WITH_YOUR_OWN_OSK` placeholder is not a key that nearly works: a domain XML
+  > redacted for sharing boots this far and no further. See section 12.
 * **SMBIOS** — a plausible Mac model. `iMac19,1` is a common choice for a desktop GPU.
 * **Board-id / serial** — in the OpenCore config.
 * **Kexts** — Lilu, VirtualSMC, WhateverGreen and friends for a VM.
@@ -482,7 +458,7 @@ Differences from stage 1:
   no display and cannot deliver input. Note the host **loses** those devices while the VM
   holds them.
 * **`<qemu:commandline>`** carries the CPU string, `isa-applesmc`, `-smbios`, and the
-  critical ICH9-LPC property (the ICH9-LPC argument in Appendix A).
+  critical `ICH9-LPC` property.
 
 > ### ⚠️ Both configs must be edited to work
 >
@@ -502,10 +478,12 @@ virsh -c qemu:///system start macos
 
 **Switching to stage 2 is not just a `define`.** The domain expects the host to have been
 prepared first — the GPU already bound to `vfio-pci`, and its BAR1 already sized — because
-the guest reads the BAR at boot and cannot be given it later:
+the guest reads the BAR at boot and cannot be given it later. `gpu-to-vfio.sh` takes the BAR
+size as a **bit index, not a byte count**, and defaults to 14 (16 GiB); `scripts/set-bar1.sh`
+is the one that accepts `16GiB`:
 
 ```bash
-sudo scripts/gpu-to-vfio.sh 16GiB     # unbind, size BAR1, bind vfio-pci  (section 4-5)
+sudo scripts/gpu-to-vfio.sh 14       # bit index 14 = 16 GiB: unbind, size BAR1, bind vfio-pci  (section 4-5)
 virsh -c qemu:///system destroy macos
 virsh -c qemu:///system define config/macos-passthrough.xml
 virsh -c qemu:///system start macos
@@ -520,11 +498,11 @@ to the host driver, since stage 1 does not pass anything through.
 * **`<video>` and the root-port placement are not cosmetic.** Getting either wrong
   produces a guest that boots to a black screen or an Apple logo with no progress.
 * **libvirt silently drops attributes it does not understand.** `hotplug='off'` on a
-  `<controller>` is one of them. Always verify at QEMU (the ICH9-LPC argument in Appendix A).
+  root-port `<controller>` is one of them — it never reaches QEMU, which is why it is not in
+  the shipped config. **Verify at QEMU, not in the XML:** the comment on the `ICH9-LPC`
+  argument in Appendix A explains why it matters and how to confirm it arrived.
 * **The `<qemu:commandline>` block is load-bearing.** If it disappears, macOS hangs at the
   Apple logo with zero CPU.
-* **`hotplug='off'` on root ports does nothing** — it never reaches QEMU. It is not in the
-  shipped config for that reason.
 
 ---
 
@@ -532,29 +510,31 @@ to the host driver, since stage 1 does not pass anything through.
 
 Using **stage 1** (`config/macos-install.xml`):
 
+**Create the guest disk before you start the domain — the command is step 1 below.** libvirt
+will refuse to start a domain whose disk image is missing.
+
 ```bash
 virsh -c qemu:///system define config/macos-install.xml
 virsh -c qemu:///system start macos --console
 ```
 
-In the SPICE window (`virt-manager`, or `virt-viewer -c qemu:///system macos`):
+**Step 1 is a host command; the rest happen in the SPICE window** (`virt-manager`, or
+`virt-viewer -c qemu:///system macos`):
 
-1. **OpenCore picker** → choose the macOS installer entry.
-2. **Disk Utility** → *View → Show All Devices* → select the large SATA disk → **Erase** as
-   **APFS**, GUID partition scheme.
-
-   **That disk must exist first.** Nothing in the domain XML creates it, and libvirt will
-   refuse to start a domain whose disk image is missing. `scripts/setup-macos.sh` creates
-   it (`/var/lib/libvirt/images/macos.img`, 1 TiB thin) and registers a domain — run it once
-   before the first boot:
+1. **Create the guest disk.** Nothing in the domain XML creates it. `scripts/setup-macos.sh`
+   creates it (`/var/lib/libvirt/images/macos.img`, 1 TiB thin) and registers a domain — run
+   it once before the first boot:
 
    ```bash
    sudo scripts/setup-macos.sh                      # creates the disk, defines stage 1
    ```
-3. Quit Disk Utility → **Install macOS** → pick the erased disk.
-4. The installer reboots several times; OpenCore auto-selects the installer, then the
+2. **OpenCore picker** → choose the macOS installer entry.
+3. **Disk Utility** → *View → Show All Devices* → select the large SATA disk → **Erase** as
+   **APFS**, GUID partition scheme.
+4. Quit Disk Utility → **Install macOS** → pick the erased disk.
+5. The installer reboots several times; OpenCore auto-selects the installer, then the
    installed volume. Let it run — the first stage alone takes 20-40 minutes.
-5. Create your user account at the end.
+6. Create your user account at the end.
 
 **If the screen goes black and nothing happens:** this is usually the OpenCore picker
 having no display, or the install media not being found. Give it a couple of minutes — the
@@ -580,13 +560,22 @@ Then keep the guest on a fixed address (a libvirt DHCP reservation, or a static 
    amfi_get_out_of_my_way=0x1 amfi=0x80 debug=0x8 serial=1
    ```
 
-   `debug=0x8 serial=1` sends the kernel log to COM1 — which with `video=none` is your only
-   way to read driver messages. See section 10.
+   `debug=0x8 serial=1` sends the kernel log to COM1. With `video=none`, that is **the only
+   channel for driver messages.** See section 10.
 
 2. Set `SecureBootModel` to `Disabled` and `csr-active-config` as the driver's README
-   requires.
+   requires. Do this **before the stage-2 boot** — the driver install runs there and cannot
+   run with SIP on:
 
-3. Shut down, switch to **stage 2**, and boot with the GPU passed through.
+   > **SIP must be off before the driver installer runs.** With SIP on, `install.sh` stops
+   > at "back up kernel collection / Operation not permitted", which reads as a corrupt
+   > package or a bad download — it is neither. The kernel collection carries the SIP
+   > `restricted` flag, and root cannot read it with SIP on. Set `csr-active-config` in
+   > OpenCore, reboot, confirm `csrutil status` says `disabled`, and only then install. See
+   > section 9.
+
+3. Shut down the guest, switch the domain to **stage 2** (section 7), and boot with the GPU
+   passed through.
 
 ---
 
@@ -595,6 +584,121 @@ Then keep the guest on a fixed address (a libvirt DHCP reservation, or a static 
 Follow the driver's own README for the package install; this section covers only what
 differs in a VM.
 
+**The tar package and 1401.app are NOT equivalent, and this is the single most important
+thing in this section.** 1401.app wraps two scripts. `install.sh` — the 129-line script in
+`nullmoth-nvidia-*.tar.gz` — installs the files and rebuilds the kernel collection. That is
+half the job. `nullmoth-setup.sh` — **639 lines, only in 1401.app, which the tar does not
+contain at all** — is the other half, and it:
+
+* edits the OpenCore config — `boot-args`, `csr-active-config`, and the
+  `com.apple.iokit.IONDRVSupport` entry in `Kernel.Block` (a function exists purely to find
+  and manage that index)
+* installs `com.nullmoth.crashcheck.plist` and `com.nullmoth.recover.plist` into
+  `/Library/LaunchAgents` and `/Library/LaunchDaemons`
+* resolves which ESP actually booted by reading OpenCore's own `boot-path` NVRAM variable
+  instead of guessing
+* runs display bring-up diagnostics against `debug.nvaccel_heads_published`,
+  `debug.nvaccelfb`, `debug.nvrmfb_agdc` and `debug.nvaccel_iop`
+
+**A tar-only install therefore produces exactly this symptom: all four kexts load, BAR1 is
+placed at 16 GiB, the budget is the correct 8 GiB, frames are generated — and the desktop
+never appears.** Nothing configured OpenCore and nothing published the display heads. If you
+install without 1401.app, you must run `nullmoth-setup.sh` as well; it is inside the
+release's `1401-Mac-*.zip`, at `1401.app/Contents/Resources/`, and it requires root and the
+package path as an argument.
+
+**Two ways through this section. Pick by what your display does — not by preference.**
+
+| what you see | what to do |
+|---|---|
+| macOS reaches a **login window** on the passed-through card | Use **1401.app**. It is the vendor's own installer and it does the whole job: the driver, the OpenCore config, the `Kernel → Block` entry, the display-head publication. Download `1401-Mac-*.dmg` from the driver's releases, run it in the guest, reboot. |
+| macOS **boots but shows nothing** — a cursor on black, a frozen Apple logo, or `screencapture` failing with *"could not create image from display 0"* | Do **not** reach for the tar first. Work through the four checks below in order; the usual cause is the OSK or a dirty GPU, not the driver. If those are clean and it still will not display, install from the tar and run `nullmoth-setup.sh` from the 1401 zip — that is the half `install.sh` does not do. |
+
+**Before you install, check four things.** The installer writes kernel collections and
+loads unsigned kexts, so it fails in ways that look like package corruption when the real
+cause is one of these. Run all four first:
+
+```bash
+csrutil status                                          # MUST say: disabled
+nvram -p | grep csr-active-config                       # MUST be present, not %00%00%00%00
+lspci -nnk -s 01:00.0 | grep -i "driver in use"         # MUST be vfio-pci
+python3 -c "l=open('/sys/bus/pci/devices/0000:01:00.0/resource').readlines(); a=int(l[1].split()[0],16); b=int(l[1].split()[1],16); print('BAR1 %d GiB' % ((b-a+1)/2**30))"
+```
+
+| check | must be | if it is not |
+|---|---|---|
+| `csrutil status` | `disabled` | `csr-active-config` is unset in OpenCore, or you have not rebooted since setting it. **With SIP on, root cannot read a `restricted` kernel collection**, so the installer's backup step fails — and reports it as a backup error, not as SIP. |
+| `csr-active-config` | a real value; `<430A0000>` is the tested one | set it in `NVRAM → Add → 7C436110-…`, reboot, re-check before installing |
+| host BAR1 | at least 4 GiB | size it while the domain is off (section 5) |
+| `driver in use` | `vfio-pci` | bind it first (section 4) |
+
+**Boot the driver-phase OpenCore config before you run the installer**, even though there
+is no driver yet. The installer-phase and driver-phase configs differ in exactly the
+settings the driver needs — `csr-active-config`, `ResizeAppleGpuBars`, and the IONDRVSupport
+block — so an install attempted from the installer-phase config cannot succeed.
+
+> **Install against a freshly reset GPU.** A guest reboot does not reset the physical card:
+> with vfio the guest driver programs the real GPU. Booting macOS several times in one
+> session leaves the passed-through card in a state that silently prevents
+> `applyModeSetConfig` from running at all — the same frames-generated, dark-panel pair, with
+> nothing pointing at the cause. This is prevention, not recovery: section 11 is what clears
+> a session that has already gone wrong. Reset on the host before that boot — the size is a
+> bit index, and 14 is 16 GiB:
+
+```bash
+sudo scripts/gpu-to-host.sh          # unbind vfio
+echo 1 | sudo tee /sys/bus/pci/devices/0000:01:00.0/reset
+sudo scripts/gpu-to-vfio.sh 14       # rebind and re-size, bit index 14 = 16 GiB
+```
+
+**Run `nullmoth-setup.sh` as the app does**, from a directory containing the audited
+`install.sh` the app ships beside it (the tar's own copy is at `pkgroot/install.sh`), with
+every input it demands:
+
+```bash
+sudo ./nullmoth-setup.sh \
+  --pkg  /path/to/nullmoth-nvidia-<ver>.tar.gz \
+  --sha  <its published sha256> \
+  --tool /path/to/NullMothSafe.efi \
+  --app  /path/to/1401.app/Contents/MacOS/1401
+```
+
+It refuses to run on a loose copy: `--tool` is required, and it insists the audited
+installer sits beside it. Both come from `1401.app/Contents/Resources/` in the release zip.
+
+**The settings the driver needs.**
+
+* **Driver package**: 1.0.9 — the version shipped in the 1401-Mac releases, latest 1.0.14.
+  Install it with 1401.app, or from the package directly.
+* **`/Library/GPUBundles/nvmtl/nvrm610.conf` — leave it at the shipped values.** They are
+  correct once BAR1 is large. **The installer rewrites this file on every install**, so
+  check it afterwards.
+* **boot-args**: exactly as in section 8.
+* **OpenCore**: **`ResizeGpuBars=-1`**, `ResizeAppleGpuBars=-1`, `DevirtualiseMmio=False`.
+
+  **`Kernel → Block com.apple.iokit.IONDRVSupport` is NOT needed here**, contrary to the
+  driver's README. That block exists so the firmware framebuffer cannot take display index 0
+  from NVRMFB, and with `<video>=none` the guest has no firmware framebuffer at all. The
+  README's requirement applies to bare metal, where you cannot remove it. **In a working
+  configuration there is no IONDRVSupport block, and NVRMFB owns index 0.**
+
+  **`-1` is deliberate, and is where this differs from the driver's README, which says
+  `13`.** The host sets BAR1 to 16 GiB before the domain starts (section 5), so OpenCore
+  must leave that BAR alone rather than resizing it underneath. It also pays: the budget is
+  `fBarLen / 2`, so 16 GiB gives **8 GiB against the README's 4**.
+
+  **1401.app writes this value itself when it installs the driver** — "switches OpenCore
+  from the installer's small GPU BAR to the full 8 GB one", i.e. `13`. **Set it back to
+  `-1`** to keep the larger budget, or leave `13` and accept 4 GiB. Do not leave the host
+  BAR at 16 GiB while OpenCore resizes to 8.
+
+**What you should see.** Before the driver is installed, macOS drives the passed-through
+card with its own fallback framebuffer: the external display shows the Apple logo, a
+progress bar, then a login window, but the picture can be a static frame. After the driver
+loads, the display is driven by the driver. **A cursor you can move with no desktop behind
+it is section 11.1, not a failed install** — the kexts are loaded and the display binding is
+stale. The remedy is `sudo killall -9 WindowServer` over SSH, which works with no console at
+all.
 
 **Updating an existing install.** Same script, same inputs — it detects the running driver
 and updates in place, with its own backups (`config.plist.nullmoth-<timestamp>` on the ESP,
@@ -615,10 +719,10 @@ with "OpenCore's startup partition could not be confirmed"** even after finding 
 the right candidate. `disk0s1` is the small EFI partition from `diskutil list`.
 
 **And make sure the guest can see the ESP.** An extra disk in the domain shifts the disk
-numbering: a recovery medium left attached as `sdc` with its own `boot order` was enough to
-make the OpenCore partition invisible to `diskutil`, which the updater reports as *"no
-OpenCore config for this Mac on any connected disk"* — pointing at OpenCore rather than at
-the extra disk. The domain should present exactly two:
+numbering: a recovery medium left attached as `sdc` with its own `boot order` makes the
+OpenCore partition invisible to `diskutil`, and the updater reports it as *"no OpenCore
+config for this Mac on any connected disk"* — pointing at OpenCore rather than at the extra
+disk. The domain should present exactly two:
 
 ```
 sda   the macOS disk
@@ -628,131 +732,16 @@ sdb   the OpenCore ESP
 If `virsh domblklist` shows more, the running domain is not the one in this repo:
 `virsh undefine --nvram` and define it again.
 
-**The tar package and 1401.app are NOT equivalent, and this is the single most important
-thing in this section.** `install.sh` — the 129-line script in `nullmoth-nvidia-*.tar.gz` —
-installs the files and rebuilds the kernel collection. That is half the job. 1401.app also
-carries `nullmoth-setup.sh`, **639 lines** that the tar does not contain at all, and it:
-
-* edits the OpenCore config — `boot-args`, `csr-active-config`, and the
-  `com.apple.iokit.IONDRVSupport` entry in `Kernel.Block` (a function exists purely to find
-  and manage that index)
-* installs `com.nullmoth.crashcheck.plist` and `com.nullmoth.recover.plist` into
-  `/Library/LaunchAgents` and `/Library/LaunchDaemons`
-* resolves which ESP actually booted by reading OpenCore's own `boot-path` NVRAM variable
-  instead of guessing
-* runs display bring-up diagnostics against `debug.nvaccel_heads_published`,
-  `debug.nvaccelfb`, `debug.nvrmfb_agdc` and `debug.nvaccel_iop`
-
-**A tar-only install therefore produces exactly this symptom: all four kexts load, BAR1 is
-placed at 16 GiB, the budget is correct, frames are generated — and the desktop never
-appears.** Nothing configured OpenCore and nothing published the display heads. If you are
-installing without 1401.app, you must run `nullmoth-setup.sh` as well; it is inside the
-release's `1401-Mac-*.zip`, at `1401.app/Contents/Resources/`, and it requires root and the
-package path as an argument.
-
-**Install against a freshly reset GPU.** Booting several macOS instances in a session leaves
-the passed-through card in a state that silently prevents `applyModeSetConfig` from running
-at all — with vfio the guest programs the physical card and a guest reboot never resets it.
-The symptom is again frames generated and a dark panel, with nothing pointing at the cause.
-Reset before a driver-phase boot:
-
-```bash
-sudo scripts/gpu-to-host.sh          # unbind vfio
-echo 1 | sudo tee /sys/bus/pci/devices/0000:01:00.0/reset
-sudo scripts/gpu-to-vfio.sh 16GiB    # rebind and re-size
-```
-
-**Two ways through this section. Pick by what your display does — not by preference.**
-
-| what you see | what to do |
-|---|---|
-| macOS reaches a **login window** on the passed-through card | Use **1401.app**. It is the vendor's own installer and it does the whole job: the driver, the OpenCore config, the `Kernel → Block` entry, the display-head publication. Download `1401-Mac-*.dmg` from the driver's releases, run it in the guest, reboot. |
-| macOS **boots but shows nothing** — a cursor on black, a frozen Apple logo, or `screencapture` failing with *"could not create image from display 0"* | Do **not** reach for the tar first. Work through the checks below in order; the usual cause is the OSK or a dirty GPU, not the driver. If those are clean and it still will not display, install from the tar and run `nullmoth-setup.sh` from the 1401 zip, which is the half `install.sh` does not do. |
-
-**Which is which, and why it matters.** 1401.app wraps two scripts. `install.sh` (129
-lines, shipped in `nullmoth-nvidia-*.tar.gz`) installs the files and rebuilds the kernel
-collection. `nullmoth-setup.sh` (**639 lines, only in 1401.app**) edits the OpenCore config —
-`boot-args`, `csr-active-config`, and the `com.apple.iokit.IONDRVSupport` entry in
-`Kernel.Block` — installs a crash-check agent and a recovery daemon, finds which ESP actually
-booted by reading OpenCore's own `boot-path` NVRAM variable, and runs the display bring-up
-diagnostics. **A tar-only install does the first and none of the second**, which produces
-four loaded kexts, a correctly placed 16 GiB BAR, an 8 GiB budget, generated frames, and no
-desktop.
-
-**Run `nullmoth-setup.sh` as the app does**, from a directory containing `nullmoth-install.sh`,
-with every input it demands:
-
-```bash
-sudo ./nullmoth-setup.sh \
-  --pkg  /path/to/nullmoth-nvidia-<ver>.tar.gz \
-  --sha  <its published sha256> \
-  --tool /path/to/NullMothSafe.efi \
-  --app  /path/to/1401.app/Contents/MacOS/1401
-```
-
-It refuses to run on a loose copy: `--tool` is required, and it insists the audited installer
-sits beside it. Both come from `1401.app/Contents/Resources/` in the release zip.
-
-**Before you install, check four things.** The installer writes kernel collections and loads
-unsigned kexts, so it fails in ways that look like package corruption when the real cause is
-one of these. Run all four first:
-
-```bash
-csrutil status                                          # MUST say: disabled
-nvram -p | grep csr-active-config                       # MUST be present, not %00%00%00%00
-lspci -nnk -s 01:00.0 | grep -i "driver in use"         # MUST be vfio-pci
-python3 -c "l=open('/sys/bus/pci/devices/0000:01:00.0/resource').readlines(); a=int(l[1].split()[0],16); b=int(l[1].split()[1],16); print('BAR1 %d GiB' % ((b-a+1)/2**30))"
-```
-
-| check | must be | if it is not |
-|---|---|---|
-| `csrutil status` | `disabled` | `csr-active-config` is unset in OpenCore, or you have not rebooted since setting it. **With SIP on, root cannot read a `restricted` kernel collection**, so the installer's backup step fails — and reports it as a backup error, not as SIP. |
-| `csr-active-config` | a real value; `<430A0000>` is the tested one | set it in `NVRAM → Add → 7C436110-…`, reboot, re-check before installing |
-| host BAR1 | at least 4 GiB | size it while the domain is off (section 5) |
-| `driver in use` | `vfio-pci` | bind it first (section 4) |
-
-**Boot the driver-phase OpenCore config before you run the installer**, even though there is
-no driver yet. The installer-phase and driver-phase configs differ in exactly the settings
-the driver needs — `csr-active-config`, `ResizeAppleGpuBars`, and the IONDRVSupport block —
-so an install attempted from the installer-phase config cannot succeed.
-
-**What you should see.** Before the driver is installed, macOS drives the passed-through card
-with its own fallback framebuffer: the external display shows the Apple logo, a progress bar,
-then a login window, but the picture can be a static frame. After the driver loads, the
-display is driven by the driver. **A cursor you can move with no desktop behind it is section
-11.1, not a failed install** — the kexts are loaded and the display binding is stale. The
-remedy is `sudo killall -9 WindowServer` over SSH, which works with no console at all.
-* **Driver package**: 1.0.9 — the version shipped in the 1401-Mac releases, latest 1.0.14.
-  Install it with 1401.app, or from the package directly.
-* **`/Library/GPUBundles/nvmtl/nvrm610.conf` — leave it at the shipped values.** They are
-  correct once BAR1 is large. **The installer rewrites this file on every install**, so
-  check it afterwards.
-* **boot-args**: exactly as in section 8.
-* **OpenCore**: **`ResizeGpuBars=-1`**, `ResizeAppleGpuBars=-1`, `DevirtualiseMmio=False`.
-
-  **`Kernel → Block com.apple.iokit.IONDRVSupport` is NOT needed here**, contrary to the
-  driver's README. That block exists so the firmware framebuffer cannot take display index 0
-  from NVRMFB, and with `<video>=none` the guest has no firmware framebuffer at all. The
-  README's requirement applies to bare metal, where you cannot remove it. Verified against a
-  working config: no IONDRVSupport block, and NVRMFB owns index 0.
-
-  **`-1` is deliberate, and is where this differs from the driver's README, which says
-  `13`.** The host sets BAR1 to 16 GiB before the domain starts (section 5), so OpenCore
-  must leave that BAR alone rather than resizing it underneath. It also pays: the budget is
-  `fBarLen / 2`, so 16 GiB gives **8 GiB against the README's 4**.
-
-  **1401.app writes this value itself when it installs the driver** — "switches OpenCore
-  from the installer's small GPU BAR to the full 8 GB one", i.e. `13`. **Set it back to
-  `-1`** to keep the larger budget, or leave `13` and accept 4 GiB. Do not leave the host
-  BAR at 16 GiB while OpenCore resizes to 8.
-
-
 > **Do not enable `NVMTL_HWPOOL=1`.** It installs private pool classes and correlates with
 > a kernel panic.
 
 ---
 
 ## 10. Verification
+
+Run these in the guest after the driver loads. **The first check is the decisive one:
+`nvrm-autogo` reads `up` only once the driver's second bring-up pass has claimed the GPU** —
+before that, macOS's own fallback framebuffer is still driving the card (section 9).
 
 ```bash
 # the driver reached pass 2 and claimed the GPU
@@ -784,9 +773,10 @@ bar1: placing BAR1 16384 MB @0x1000000000, BAR3 32 MB @0x1400000000 ... PLACED
 
 ### Reading the driver's log
 
-The driver logs with `kprintf`, which does **not** reach the unified log — with
-`<video>=none` the serial port is the only channel. The example config writes the guest's
-COM1 to a file:
+The driver logs with `kprintf`, which does **not** reach the unified log. With `<video>=none`
+there is no emulated console, so the serial port is the only channel. Reading it requires
+`debug=0x8 serial=1` in the guest boot-args. The example config writes the guest's COM1
+to a file:
 
 ```xml
 <serial type='file'>
@@ -798,9 +788,6 @@ COM1 to a file:
 ```bash
 strings /tmp/macos-serial.log | grep -aE "NVRM-xnu|NVAccel|NVRM-fb|bar1:"
 ```
-
-Requires `debug=0x8 serial=1` in the guest boot-args. With `<video>=none>` there is no
-emulated console, so this is the only way to see driver messages.
 
 ### Reference performance
 
@@ -815,7 +802,7 @@ compositor flips: 2436 -> 135.3 fps
 **Watch `parks` and `refusals`, not the fps headline.** Continuous-drag fps varies
 91-140 fps between runs on identical configuration; parks, refusals and ms/flip are stable.
 
-**And note what continuous-drag fps misses.** The same session reported its best-ever
+**And note what continuous-drag fps misses.** The session above reported its best-ever
 figures *while window switching was failing*. See the park leak in section 11.2.
 
 ---
@@ -842,9 +829,9 @@ only the cursor moving.
 **Workaround: run games windowed/borderless.** That avoids the trigger entirely — verified
 across a long session.
 
-It is **not** the flip path (`iop_flips 16766`, `iop_ok 16863`, `iop_fail 0`,
-`iop_flip_stale 0`), **not** the composite (`screencapture` returns a correct, stable
-desktop while the panel alternates), **not** async flip recycling, and **not** a
+**What it is not.** The wedge is **not** the flip path (`iop_flips 16766`, `iop_ok 16863`,
+`iop_fail 0`, `iop_flip_stale 0`), **not** the composite (`screencapture` returns a correct,
+stable desktop while the panel alternates), **not** async flip recycling, and **not** a
 late-published framebuffer. The mechanism is that the composite source changes underneath
 a running WindowServer, which keeps presenting to a surface bound before the change.
 
@@ -862,7 +849,8 @@ them**; their bytes are charged against every later grant. Measured: **8-16 VRAM
 per window switch**, climbing, while `mapped` is 120 MB of an 8 GiB budget.
 
 Symptom: continuous dragging is fine; the **first drag after switching windows** stalls.
-A reboot clears it (in-kernel state); running a game accelerates it.
+A guest reboot clears it (the parked bytes are in-kernel state); running a game
+accelerates it.
 
 ### 11.3 Shader translation is the bottleneck
 
@@ -891,12 +879,13 @@ destructive.
 
 ### Recovery
 
-Cheapest first.
+Cheapest first. Steps 1 and 2 are the wedge remedies; step 3 is for the park leak
+(section 11.2).
 
 | # | step | effect |
 |---|---|---|
-| 1 | **`sudo killall -9 WindowServer`**, then log in | Re-binds the scanout. ~30 s, logs out. **Verified.** Keeps the VM and the BAR. |
-| 2 | **Host FLR**: unbind vfio-pci, `echo 1 > .../reset`, rebind, restart VM | **Verified.** Costs a VM restart. |
+| 1 | **`sudo killall -9 WindowServer`**, then log in | **Verified.** Re-binds the scanout. ~30 s, logs out. Keeps the VM and the BAR. |
+| 2 | **Host FLR**: unbind vfio-pci, `echo 1 > .../reset`, rebind, restart VM | **Verified.** Clears the display wedge. Costs a VM restart. |
 | 3 | Guest reboot | Clears the parked bytes, but **does not** clear a scanout wedge. |
 
 **Guest reboots do not clear a display wedge** — with vfio, the guest driver programs the
@@ -911,13 +900,13 @@ sleep state — go to step 1.
 
 ### A placeholder OSK boots but gives no display
 
-**If you substitute your own OSK (section 6) and get a macOS that boots, serves SSH, loads the
-driver and reports `bar1: PLACED` — but has no working display — check the OSK first.**
+**Check the OSK first: a wrong or placeholder `osk` gives you a macOS that boots, serves SSH,
+loads the driver and reports `bar1: PLACED` — with no display.**
 
-macOS will start with a wrong or placeholder `osk` and look almost healthy from the inside:
-WindowServer runs, `kmutil showloaded` shows all four kexts, the driver places BAR1 correctly,
-and `applyModeSetConfig` succeeds. What it will not do is initialise the display. The
-symptoms are worth recognising because they point everywhere except the cause:
+Inside the guest it looks almost healthy: WindowServer runs, `kmutil showloaded` shows all
+four kexts, the driver places BAR1 correctly, and `applyModeSetConfig` succeeds. What it will
+not do is initialise the display. The symptoms are worth recognising because they point
+everywhere except the cause:
 
 | what you see | what it actually means |
 |---|---|
@@ -931,25 +920,40 @@ symptoms are worth recognising because they point everywhere except the cause:
 survives an FLR, a fresh GPU reset, a WindowServer restart, and every combination of
 `<video>` model — because the fault is upstream of all of them.
 
-Substitute a real OSK and the same image, ESP and domain boot straight to a login window.
+Substitute a real OSK (section 6) and the same image, ESP and domain boot straight to a login
+window. Until you do, a domain XML redacted for sharing boots exactly this far and no
+further — which is why the placeholder is worth ruling out before anything else.
 
 ### If the display wedges
 
-These do **not** clear it. Use the recovery ladder in section 11:
+**What does not work:**
 
-Metal shader-cache clear, `killall Dock`, wallpaper change, display sleep/wake, `debug.nvaccelfb=3`, `debug.nvaccel_iop_async=0`, and `nvrmctl` (which only has `go`, `good`, `state`).
+* Metal shader-cache clear.
+* `killall Dock`.
+* Wallpaper change.
+* Display sleep/wake.
+* `debug.nvaccelfb=3`.
+* `debug.nvaccel_iop_async=0`.
+* `nvrmctl` — it only exposes `go`, `good`, and `state`.
+
+None of these clears a wedge. To clear one, use the recovery ladder in section 11 — cheapest
+first.
 
 ### Tooling traps
 
-* **Verify at the consumer, never at the writer.** Every silent-drop incident had this
-  shape.
+* **Verify at the consumer, never at the writer.** A setting that is silently dropped and a
+  setting that does not work look identical from where you wrote it, and every silent-drop
+  incident in this setup had this shape.
 * `qemu-nbd --disconnect` with a filesystem mounted leaves a **stale mount**; later I/O
   fails with `Errno 5` while `qemu-img check` reports the image clean. `umount` first.
-* `pkill -f` patterns can match your own shell.
+* `pkill -f` patterns can match your own shell, because the pattern is in your own command
+  line too. Check the matches with `pgrep -f` and kill by PID, or bracket a character
+  (`[n]vrmctl`) so the pattern cannot match itself.
 * HMP parses the `pmemsave` filename as an expression — quote it.
 * macOS 15's `/usr/bin/python3` has no `Quartz`/`AppKit`, so `CGWindowListCopyWindowInfo`
   raises `ModuleNotFoundError` and looks like "no window".
-* macOS ships no `timeout`, `setpci`, `lspci`, or `/usr/include`.
+* macOS ships no `timeout`, `setpci`, `lspci`, or `/usr/include`. Scripts that assume them
+  fail on the guest, so the guest-side tooling in this repo is written around their absence.
 * `sshd`-driven `ps aux` renders paths in **uppercase**; use `grep -i`.
 
 ---
@@ -959,7 +963,9 @@ Metal shader-cache clear, `killall Dock`, wallpaper change, display sleep/wake, 
 Everything is inline here so this file is self-contained. The same content is also in
 `config/` for direct use.
 
-**Both files must be edited before use** — see the warning in Appendix B.
+**Both files must be edited before use** — every emulator, loader, NVRAM and disk path is the
+author's, and the passthrough file's GPU address is deliberately fake. Appendix B has the
+full list.
 
 ### A.1 — `config/macos-passthrough.xml` (the working configuration)
 
@@ -1731,10 +1737,10 @@ last one this file cannot install anything.
 >
 > | what | where | ships as |
 > |---|---|---|
-> | your GPU's host address | both domain XMLs; `GPU_BDF`/`GPU_AUDIO_BDF` in the scripts | a deliberately fake `ff:1f.0`, so it fails loudly rather than touching a real device |
+> | your GPU's host address | `macos-passthrough.xml` only (the install config passes nothing through); `GPU_BDF`/`GPU_AUDIO_BDF` in the scripts | a deliberately fake `ff:1f.0`, so it fails loudly rather than touching a real device |
 > | **your keyboard and mouse** | the two USB hostdevs in `macos-passthrough.xml` | the author's devices (`3151:4011`, `046d:c08b`) |
 > | **the emulator, loader and NVRAM paths** | both domain XMLs | NixOS paths (`/run/libvirt/nix-emulators/…`, `/run/libvirt/nix-ovmf/…`) |
-> | your OSX-KVM clone and disk paths | both domain XMLs; `OSX_KVM` in `setup-macos.sh` | `/path/to/OSX-KVM`, `/var/lib/libvirt/images/macos.img` |
+> | your OSX-KVM clone and disk paths | both domain XMLs; `OSX_KVM` in `scripts/setup-macos.sh` | `/path/to/OSX-KVM`, `/var/lib/libvirt/images/macos.img` |
 >
 > **The USB row is the one that strands people.** With `<video>=none` the guest has no
 > emulated console, so those two hostdevs are the *only* keyboard and mouse it gets — and
@@ -1755,14 +1761,14 @@ clear `driver_override`, unbind, resize BAR1, bind vfio-pci.
 **The guarded ones** (`scripts/gpu-to-vfio.guarded.sh`, `scripts/gpu-to-host.guarded.sh`,
 `scripts/gpu-vfio-status.sh`, `scripts/gpu-vfio-apply.sh`) — longer, and relatively safe
 to run because they check before they act: they refuse to unbind while anything holds the
-GPU open, they detect a GPU that is powered off, they verify the binding afterwards, and
-they offer a "schedule this for your next logout" path for the case where the GPU is
-driving your desktop. If you are going to run this on a machine you care about, start
-with these.
+GPU open, they verify the binding afterwards, and they offer a "schedule this for your next
+logout" path for the case where the GPU is driving your desktop. If you are going to run
+this on a machine you care about, start with these.
 
-Both sets run on the host, need root, and take the BAR bit index as an argument.
-
-
+Both sets act only on the GPU address you set at the top of the file; neither guesses it.
+Both run on the host and need root, and both take a BAR size as an argument: the two
+`gpu-to-*` scripts as a bit index (`16GiB` is not a bit index and will be rejected),
+`scripts/set-bar1.sh` as bytes, a `GiB`/`MiB` suffix, or a bit index.
 
 | file | where it runs | what it does |
 |---|---|---|
@@ -1770,6 +1776,10 @@ Both sets run on the host, need root, and take the BAR bit index as an argument.
 | `config/macos-passthrough.xml` | host | stage 2: the working passthrough configuration |
 | `scripts/gpu-to-vfio.sh` | host | unbind the GPU from its driver, set the BAR, bind vfio-pci |
 | `scripts/gpu-to-host.sh` | host | give the GPU back to the host driver |
+| `scripts/gpu-to-vfio.guarded.sh` | host | the same, with checks; offers a deferred switch after logout |
+| `scripts/gpu-to-host.guarded.sh` | host | give the GPU back, with checks |
+| `scripts/gpu-vfio-status.sh` | host | report the current state; changes nothing |
+| `scripts/gpu-vfio-apply.sh` | host | apply a deferred switch, after the logout |
 | `scripts/set-bar1.sh` | host | set BAR1 size (`16GiB`, `17179869184` or bit index `14`; refuses to run without an argument) |
 | `tools/bench.sh` | guest | autonomous drag benchmark; parks/refusals/fps |
 | `tools/dragload.m` | guest | drag-load microbenchmark |
@@ -1791,20 +1801,17 @@ Inline so this file stands alone. The same files are in `scripts/` and `tools/`.
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-# ============================================================================
-#  REVIEW BEFORE RUNNING. This script detects the GPU itself (via lspci), but it
-#  still assumes things about your machine:
+
+# gpu-to-vfio.guarded.sh — release the GPU from its host driver, size BAR1 for
+# the guest, and hand it to vfio-pci, with pre-flight checks.
 #
-#    * the GPU is the first NVIDIA 3D controller lspci reports -- if you have
-#      more than one, set GPU_BDF below explicitly;
-#    * the BAR sizes at the bottom of this block match the card this was written
-#      for. Check what yours advertises:  lspci -vv | grep -A2 "Resizable BAR"
-#    * it may reference host services (e.g. a GPU power manager) that do not
-#      exist on your system. Those guards degrade to no-ops, but read them.
+#   sudo ./gpu-to-vfio.guarded.sh [-s]
 #
-#  It will NOT silently damage anything: if it cannot find the GPU it stops.
-#  Still, read it before running it as root.
-# ============================================================================
+# -s makes it non-interactive: it reports and exits rather than asking.
+#
+# ⚠️ EDIT THE ADDRESSES BELOW (GPU_BDF / GPU_AUDIO_BDF) before running. This
+# script never guesses which GPU you mean, and never powers a laptop dGPU on
+# for you — waking one is vendor-specific, so do that first.
 
 red()    { echo -e "\e[31m$*\e[0m" >&2; }
 green()  { echo -e "\e[32m$*\e[0m" >&2; }
@@ -1820,33 +1827,18 @@ SILENT=false
 case "${1:-}" in -s) SILENT=true; shift;; esac
 
 # ── Resizable BAR sizing ─────────────────────────────────────
-# BAR1 on the dGPU is a Resizable BAR, and its SIZE decides the NullMoth
-# driver's VRAM budget:
-#
-#     budget = (fBarLen >= 4 GiB) ? fBarLen / 2 : 192 MB      (nvrm-fb.cpp)
-#
-# so a small BAR caps the driver at 192 MB no matter how much VRAM the card
-# has. Set it as large as the card advertises: 16 GiB gives an 8 GiB budget.
+# BAR1 on the dGPU is a Resizable BAR. A large one breaks VM passthrough:
+# at 8 GiB and above the guest firmware places it on a non-canonical
+# address (0x8508000000000000 — a 32-bit base written into the high dword
+# of a 64-bit BAR), which QEMU/KVM reject, so the domain either fails to
+# start or the guest ends up with no usable aperture. 4 GiB is the largest
+# size that still places correctly. Shrink for the VM, restore max for host.
 #
 # resource1_resize takes a BIT INDEX, not a byte count:
 #   0=1MB 1=2MB 2=4MB ... 10=1GiB 11=2GiB 12=4GiB 13=8GiB 14=16GiB
 # so the size in bytes is 2^(idx+20).
-#
-# Keep BAR1 large. For this to work the GPU must sit BEHIND A PCIE ROOT PORT
-# (guest bus 0x01), and QEMU must stop advertising ACPI hotplug for PCI bridges:
-# QEMU advertising ACPI hotplug for PCI bridges:
-#
-#     -global ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off
-#
-# Without that property macOS assigns a root-port device no resources at all
-# (the root ports advertise zero-size `ranges`). With it, macOS resources the
-# card, the driver places its own 16 GiB BAR, and the budget goes 192 MB ->
-# 8 GiB. MEASURED: bar1@0x14:0x1000000000+0x400000000, budget 8589934592.
-#
-# Do not lower this. A small BAR is not a requirement of macOS; it is what you
-# are stuck with when the guest cannot present the normal Mac topology.
-BAR_IDX_VFIO=14   # 16 GiB — maximum this card advertises; gives an 8 GiB budget
-BAR_IDX_HOST=14   # 16 GiB — the same; kept separate as they need not match
+BAR_IDX_VFIO=12   # 4 GiB — largest size that passes through correctly
+BAR_IDX_HOST=14   # 16 GiB — the maximum this card advertises
 
 # BAR1 size in bytes for a BDF (0 if unassigned or no resizable BAR1)
 bar1_bytes() {
@@ -1892,14 +1884,41 @@ ensure_bar1_for_vfio() {
         echo "$dev" > "/sys/bus/pci/drivers/$drv/unbind" 2>/dev/null || true
         sleep 0.5
     fi
-    set_bar1 "$dev" "$BAR_IDX_VFIO" "16 GiB for passthrough"
+    set_bar1 "$dev" "$BAR_IDX_VFIO" "4 GiB for passthrough"
     echo "vfio-pci" > "/sys/bus/pci/devices/$dev/driver_override" 2>/dev/null || true
     echo "$dev" > /sys/bus/pci/drivers_probe 2>/dev/null || true
 }
 
+
 # ── GPU-holder helpers (used by the force path) ──────────────
-# System daemons are tolerated here — they are stopped via systemd later.
+# NVIDIA daemons are tolerated here — they are stopped via systemd later.
 IGNORE_PROCS="nvidia-powerd|nvidia-persistenced"
+
+# The GPU's DRM nodes. A compositor that has merely *opened* the card — without
+# driving any display on it — pins nvidia_drm through /dev/dri/cardN, and no
+# service check or /dev/nvidia* scan sees that. Leaving it out is how a handoff
+# decides the GPU is free, unbinds it, and then wedges the kernel in rmmod.
+#
+# Node names come from `ls` and ownership from `readlink`, with no existence
+# test: on some systems an LSM answers ENOENT for the passed-through card, so
+# `[ -e /dev/dri/card0 ]` and `[ -e /sys/class/drm/card0 ]` both report false
+# while `ls` lists them.
+gpu_drm_nodes() {
+    local node link bdf out=""
+    for node in $(ls /sys/class/drm/ 2>/dev/null); do
+        case "$node" in
+            card[0-9]*|renderD*) ;;
+            *) continue;;
+        esac
+        case "$node" in *-*) continue;; esac          # connector entries
+        link=$(readlink -f "/sys/class/drm/$node/device" 2>/dev/null) || continue
+        bdf="${link##*/}"
+        case "$bdf" in
+            "$GPU_BUSDEV"*) out="$out /dev/dri/$node";;
+        esac
+    done
+    echo "${out# }"
+}
 
 # List live (non-zombie) PIDs holding NVIDIA devices
 gpu_holders() {
@@ -1908,8 +1927,34 @@ gpu_holders() {
         [ -e "$nvdev" ] || continue
         pids="$pids $(fuser "$nvdev" 2>/dev/null || true)"
     done
+    # The card itself: through its DRM nodes (a compositor, a game) and through
+    # the PCI device. Without the DRM nodes the usual desktop-session holder is
+    # invisible here, which is how a handoff unbinds a GPU that is still in use.
+    for node in $(gpu_drm_nodes); do
+        pids="$pids $(fuser "$node" 2>/dev/null || true)"
+    done
     for dev in "${ALL_DEVS[@]}"; do
         pids="$pids $(fuser "/sys/bus/pci/devices/$dev" 2>/dev/null || true)"
+    done
+    # fuser can report nothing at all when an LSM answers ENOENT on device
+    # paths, so the same holders are also collected by walking /proc. The
+    # alternation is written out in the case syntax on purpose: `case $x in
+    # $pat)` with pat="a|b" is one literal pattern and never matches.
+    for p in /proc/[0-9]*; do
+        local pid=${p#/proc/}
+        [ -d "$p/fd" ] || continue
+        for f in "$p"/fd/*; do
+            local t
+            t=$(readlink "$f" 2>/dev/null) || continue
+            case "$t" in
+                /dev/nvidia*)
+                    pids="$pids $pid"; break;;
+                /dev/dri/*)
+                    case " $(gpu_drm_nodes) " in
+                        *" $t "*) pids="$pids $pid"; break;;
+                    esac;;
+            esac
+        done
     done
     local out=""
     for pid in $pids; do
@@ -1917,62 +1962,30 @@ gpu_holders() {
         if echo "$pname" | grep -qE "$IGNORE_PROCS"; then continue; fi
         state=$(ps -o stat= -p "$pid" 2>/dev/null || true)
         case "$state" in *Z*|*z*) continue;; esac
+        case " $out " in *" $pid "*) continue;; esac
         out="$out $pid"
     done
     echo "$out"
 }
 
-# ── Discover / wake NVIDIA dGPU ──────────────────────────────
-ASUS_DGPU_DISABLE=/sys/devices/platform/asus-nb-wmi/dgpu_disable
-info "Discovering NVIDIA dGPU..."
+# ── GPU address: yours, not a guess ──────────────────────────
+# ⚠️ EDIT THESE. The addresses below are DELIBERATELY FAKE (ff:1f.0 is not a
+# real device) so a copy-paste fails loudly instead of acting on the wrong GPU.
+# Find yours with:  lspci -nn | grep -i -e nvidia -e vga
+# It looks like 0000:01:00.0 -> use that. The audio function is .1 on the same
+# bus/slot. This script never guesses, and never powers a laptop dGPU on for
+# you: waking one is vendor-specific (on ASUS it is dgpu_disable, elsewhere a
+# MUX or vendor tool), so do that yourself before running this.
+GPU_BDF="${GPU_BDF:-0000:ff:1f.0}"
+GPU_AUDIO_BDF="${GPU_AUDIO_BDF:-0000:ff:1f.1}"
+info "Checking the configured GPU..."
 
-GPU_BDF=$(lspci -D -d 10DE::0300 2>/dev/null | awk 'NR==1{print $1}')
-WAS_OFF=false
-if [ -z "$GPU_BDF" ]; then
-    info "dGPU is off — powering on for VFIO passthrough..."
-
-    # Clear ASUS dgpu_disable if set
-    if [ -f "$ASUS_DGPU_DISABLE" ] && grep -q 1 "$ASUS_DGPU_DISABLE" 2>/dev/null; then
-        info "Clearing dgpu_disable..."
-        tries=0
-        while :; do
-            if echo 0 > "$ASUS_DGPU_DISABLE" 2>/dev/null; then
-                sleep 0.1
-                if grep -q 0 "$ASUS_DGPU_DISABLE" 2>/dev/null; then
-                    ok "dgpu_disable = 0"
-                    break
-                fi
-            fi
-            tries=$((tries + 1))
-            [ "$tries" -ge 4 ] && { fail "Could not clear dgpu_disable"; exit 1; }
-            sleep 0.5
-        done
-    fi
-
-    # Power on any slot that was off
-    for slot in /sys/bus/pci/slots/*/; do
-        [ -e "$slot/power" ] || continue
-        power=$(tr -dc '01' < "$slot/power" 2>/dev/null || true)
-        if [ "$power" = "0" ]; then
-            echo 1 > "$slot/power" 2>/dev/null || true
-        fi
-    done
-
-    # Rescan PCI bus until GPU appears
-    info "Rescanning PCI bus..."
-    for _ in $(seq 1 16); do
-        echo 1 > /sys/bus/pci/rescan 2>/dev/null || true
-        sleep 0.5
-        GPU_BDF=$(lspci -D -d 10DE::0300 2>/dev/null | awk 'NR==1{print $1}')
-        [ -n "$GPU_BDF" ] && break
-    done
-    if [ -z "$GPU_BDF" ]; then
-        red "ERROR: dGPU did not appear after power-on."
-        exit 1
-    fi
-    ok "dGPU powered on at $GPU_BDF"
-    WAS_OFF=true
-fi
+for dev in "$GPU_BDF" "$GPU_AUDIO_BDF"; do
+    [ -e "/sys/bus/pci/devices/$dev" ] && continue
+    red "ERROR: $dev does not exist on this machine."
+    red "Edit GPU_BDF/GPU_AUDIO_BDF at the top of this script."
+    exit 1
+done
 GPU_BUSDEV="${GPU_BDF%.*}"
 
 # Gather all NVIDIA functions on this device and their drivers
@@ -2020,7 +2033,6 @@ if $all_vfio; then
 fi
 
 # ── GPU was off: skip all checks, go straight to binding ────
-if ! $WAS_OFF; then
 
 # ── Check: GPU function on something unexpected? ─────────────
 mixed=false
@@ -2097,11 +2109,22 @@ for dev in "${ALL_DEVS[@]}"; do
 done
 
 # ── Check for active graphical sessions ──────────────────────
+count_seat_sessions() {
+    local s class seat out=""
+    for s in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
+        class=$(loginctl show-session "$s" -p Class --value 2>/dev/null || true)
+        seat=$(loginctl show-session "$s" -p Seat --value 2>/dev/null || true)
+        case "$class" in manager|greeter) continue;; esac
+        case "$seat" in ""|-|*"("* ) continue;; esac
+        case " $out " in *" $s "*) continue;; esac
+        out="$out $s"
+    done
+    echo "$out"
+}
+
 HAS_SEAT=false
 if command -v loginctl &>/dev/null; then
-    if loginctl list-sessions --no-legend 2>/dev/null | grep -v "tty" | grep -q "seat0"; then
-        HAS_SEAT=true
-    fi
+    [ -n "$(count_seat_sessions)" ] && HAS_SEAT=true
 fi
 
 if ! $has_procs && ! $HAS_DISPLAY && ! $HAS_SEAT; then
@@ -2210,7 +2233,6 @@ for mod in nvidia_drm nvidia_modeset nvidia_uvm nvidia nvidia_wmi_ec_backlight; 
 done
 sleep 0.5
 
-fi   # end of $WAS_OFF guard
 
 # ── Bind to vfio-pci ─────────────────────────────────────────
 info "Binding NVIDIA functions to vfio-pci..."
@@ -2253,7 +2275,7 @@ for dev in "${ALL_DEVS[@]}"; do
     fi
 
     # BAR1 must be programmed while the device is unbound
-    set_bar1 "$dev" "$BAR_IDX_VFIO" "16 GiB for passthrough"
+    set_bar1 "$dev" "$BAR_IDX_VFIO" "4 GiB for passthrough"
 
     # Pin to vfio-pci and probe
     if ! echo "vfio-pci" > "/sys/bus/pci/devices/$dev/driver_override" 2>/dev/null; then
@@ -2296,20 +2318,16 @@ fi
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-# ============================================================================
-#  REVIEW BEFORE RUNNING. This script detects the GPU itself (via lspci), but it
-#  still assumes things about your machine:
+
+# gpu-to-host.guarded.sh — give the GPU back to its host driver and restore the
+# full BAR1, with checks.
 #
-#    * the GPU is the first NVIDIA 3D controller lspci reports -- if you have
-#      more than one, set GPU_BDF below explicitly;
-#    * the BAR sizes at the bottom of this block match the card this was written
-#      for. Check what yours advertises:  lspci -vv | grep -A2 "Resizable BAR"
-#    * it may reference host services (e.g. a GPU power manager) that do not
-#      exist on your system. Those guards degrade to no-ops, but read them.
+#   sudo ./gpu-to-host.guarded.sh [-s]
 #
-#  It will NOT silently damage anything: if it cannot find the GPU it stops.
-#  Still, read it before running it as root.
-# ============================================================================
+# Run this after shutting the VM down.
+#
+# ⚠️ EDIT THE ADDRESSES BELOW (GPU_BDF / GPU_AUDIO_BDF) before running. This
+# script never guesses which GPU you mean.
 
 red()    { echo -e "\e[31m$*\e[0m" >&2; }
 green()  { echo -e "\e[32m$*\e[0m" >&2; }
@@ -2324,20 +2342,23 @@ if [ "$EUID" -ne 0 ]; then exec sudo "$0" "$@"; fi
 SILENT=false
 case "${1:-}" in -s) SILENT=true; shift;; esac
 
-# ── Discover / wake NVIDIA dGPU ──────────────────────────────
-info "Discovering NVIDIA dGPU..."
 
-GPU_BDF=$(lspci -D -d 10DE::0300 2>/dev/null | awk 'NR==1{print $1}')
-if [ -z "$GPU_BDF" ]; then
-    # The dGPU is not visible at all: on laptops it is usually powered down, and
-    # waking it is vendor-specific (on ASUS it is the dgpu_disable attribute, and
-    # on some machines the GPU only appears once the MUX or the vendor tool
-    # enables it). This script cannot do that portably, so it stops here rather
-    # than exec'ing something that may not exist.
-    fail "No NVIDIA GPU visible on the PCI bus."
-    echo "  Power it on first (vendor-specific: check for a dgpu_disable or" >&2
-    echo "  similar attribute under /sys/devices/platform/, or your laptop's" >&2
-    echo "  GPU mode setting), then re-run this script." >&2
+# ── GPU address: yours, not a guess ──────────────────────────
+# ⚠️ EDIT THESE. The addresses below are DELIBERATELY FAKE (ff:1f.0 is not a
+# real device) so a copy-paste fails loudly instead of acting on the wrong GPU.
+# Find yours with:  lspci -nn | grep -i -e nvidia -e vga
+# It looks like 0000:01:00.0 -> use that. The audio function is .1 on the same
+# bus/slot. This script never guesses, and never powers a laptop dGPU on for
+# you: waking one is vendor-specific, so do that yourself before running this.
+GPU_BDF="${GPU_BDF:-0000:ff:1f.0}"
+GPU_AUDIO_BDF="${GPU_AUDIO_BDF:-0000:ff:1f.1}"
+info "Checking the configured GPU..."
+
+if [ ! -e "/sys/bus/pci/devices/$GPU_BDF" ]; then
+    red "ERROR: $GPU_BDF does not exist on this machine."
+    echo "  Edit GPU_BDF/GPU_AUDIO_BDF at the top of this script." >&2
+    echo "  If the GPU is powered down on a laptop, enable it with your" >&2
+    echo "  vendor's GPU-mode setting first, then re-run." >&2
     exit 1
 fi
 GPU_BUSDEV="${GPU_BDF%.*}"
@@ -2431,15 +2452,10 @@ for mod in nvidia nvidia_modeset nvidia_uvm nvidia_drm; do
 done
 
 # ── Resizable BAR sizing (mirror of gpu-to-vfio) ─────────────
-# Keep BAR1 as large as the card advertises for passthrough: the NullMoth
-# driver's VRAM budget is fBarLen/2, so a big BAR is the point (16 GiB ->
-# 8 GiB budget). resource1_resize takes a BIT INDEX:
-# 8=256MiB, 12=4GiB, 13=8GiB, 14=16GiB.
-#
-# A small BAR is not a macOS requirement. Keep BAR1 large: with the GPU behind a PCIe
-# root port and -global ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off,
-# a 16 GiB BAR is assigned and placed by the driver itself.
-BAR_IDX_VFIO=14   # 16 GiB — must match gpu-to-vfio; see the note there
+# gpu-to-vfio shrinks BAR1 to 4 GiB because a larger one breaks guest
+# passthrough. Restore the maximum here so the host gets the full aperture
+# back. resource1_resize takes a BIT INDEX: 12=4GiB, 14=16GiB.
+BAR_IDX_VFIO=12   # 4 GiB
 BAR_IDX_HOST=14   # 16 GiB — the maximum this card advertises
 
 bar1_bytes() {
@@ -2606,11 +2622,7 @@ set -euo pipefail
 #  Still, read it before running it as root.
 # ============================================================================
 
-red()    { echo -e "\e[31m$*\e[0m" >&2; }
-green()  { echo -e "\e[32m$*\e[0m" >&2; }
-yellow() { echo -e "\e[33m$*\e[0m" >&2; }
 cyan()   { echo -e "\e[36m$*\e[0m" >&2; }
-info()   { echo -e "\e[34m[INFO]\e[0m  $*" >&2; }
 
 echo ""
 cyan "═════════════════════════════════════════════"
@@ -2700,9 +2712,13 @@ fi
 echo "── NVIDIA Kernel Modules ──"
 echo ""
 has_mod=false
+# NOTE: `lsmod | grep -q` reports a false negative under `set -o pipefail`:
+# grep -q exits at the first match, lsmod dies of SIGPIPE, and the pipeline
+# returns 141. Capture the list once and match against it instead.
+LSMOD_LIST=$(lsmod 2>/dev/null || true)
 for mod in nvidia_drm nvidia_modeset nvidia_uvm nvidia; do
-    if lsmod 2>/dev/null | grep -q "^$mod "; then
-        count=$(lsmod 2>/dev/null | grep "^$mod " | awk '{print $3}')
+    if grep -q "^$mod " <<<"$LSMOD_LIST"; then
+        count=$(awk -v m="$mod" '$1==m {print $3}' <<<"$LSMOD_LIST")
         printf "  \e[32m%-20s  loaded  (used by: %s)\e[0m\n" "$mod" "${count:-0}"
         has_mod=true
     fi
@@ -2717,8 +2733,8 @@ echo "── VFIO Kernel Modules ──"
 echo ""
 has_mod=false
 for mod in vfio_pci vfio_pci_core vfio_iommu_type1 vfio; do
-    if lsmod 2>/dev/null | grep -q "^$mod "; then
-        count=$(lsmod 2>/dev/null | grep "^$mod " | awk '{print $3}')
+    if grep -q "^$mod " <<<"$LSMOD_LIST"; then
+        count=$(awk -v m="$mod" '$1==m {print $3}' <<<"$LSMOD_LIST")
         printf "  \e[35m%-20s  loaded  (used by: %s)\e[0m\n" "$mod" "${count:-0}"
         has_mod=true
     fi
@@ -2869,10 +2885,8 @@ set -euo pipefail
 # ============================================================================
 
 red()    { echo -e "\e[31m$*\e[0m" >&2; }
-green()  { echo -e "\e[32m$*\e[0m" >&2; }
 yellow() { echo -e "\e[33m$*\e[0m" >&2; }
 info()   { echo -e "\e[34m[INFO]\e[0m  $*" >&2; }
-ok()     { echo -e "\e[32m[OK]\e[0m    $*" >&2; }
 
 if [ "$EUID" -ne 0 ]; then exec sudo "$0" "$@"; fi
 
@@ -2885,8 +2899,27 @@ if [ ! -f "$PENDING" ]; then
 fi
 
 # ── Warn about active graphical sessions ─────────────────────
+# Count sessions by property, not by scraping the table. `grep -v tty` on that
+# table discards the session that matters: a Wayland or X session is class=user
+# and *does* carry a TTY (tty2 here), so filtering on the word "tty" threw away
+# exactly the session this warning exists to find.
+count_seat_sessions() {
+    local s class seat v out=""
+    for s in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
+        class=$(loginctl show-session "$s" -p Class --value 2>/dev/null || true)
+        seat=$(loginctl show-session "$s" -p Seat --value 2>/dev/null || true)
+        case "$class" in manager|greeter) continue;; esac
+        case "$seat" in ""|-|*"("* ) continue;; esac
+        case " $out " in *" $s "*) continue;; esac
+        out="$out $s"
+    done
+    echo "$out"
+}
+
 if command -v loginctl &>/dev/null; then
-    ACTIVE=$(loginctl list-sessions --no-legend 2>/dev/null | grep -v "tty" | grep "seat0" | wc -l)
+    SEAT_SESSIONS=$(count_seat_sessions)
+    ACTIVE=0
+    [ -n "$SEAT_SESSIONS" ] && ACTIVE=$(wc -w <<<"$SEAT_SESSIONS")
     if [ "$ACTIVE" -gt 0 ]; then
         yellow "WARNING: ${ACTIVE} active graphical session(s) detected."
         yellow "It's safer to log out of your desktop first."
@@ -2947,6 +2980,17 @@ set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 1; }
 
 BAR_IDX="${1:-14}"
+
+# Refuse to run on an address that is not present. The shipped GPU_BDF is a
+# deliberate placeholder, and without this check the bind loop below silently
+# skips a nonexistent device while the verification loop prints nothing and
+# still exits 0 — reporting success for a GPU that was never touched.
+if [ ! -e "/sys/bus/pci/devices/$GPU_BDF" ]; then
+    echo "STOP: $GPU_BDF does not exist on this machine." >&2
+    echo "      Edit GPU_BDF/GPU_AUDIO_BDF at the top of this script (find yours with: lspci -nn | grep -i nvidia)." >&2
+    exit 1
+fi
+
 DEVS=("$GPU_BDF")
 [ -e "/sys/bus/pci/devices/$GPU_AUDIO_BDF" ] && DEVS+=("$GPU_AUDIO_BDF")
 
@@ -3014,12 +3058,15 @@ done
 echo
 echo "verifying:"
 rc=0
+seen=0
 for dev in "${DEVS[@]}"; do
     [ -e "/sys/bus/pci/devices/$dev" ] || continue
+    seen=$(( seen + 1 ))
     drv=$(readlink "/sys/bus/pci/devices/$dev/driver" 2>/dev/null | xargs -r basename || echo none)
     printf '  %s -> %s\n' "$dev" "$drv"
     [ "$drv" = "vfio-pci" ] || rc=1
 done
+[ "$seen" -gt 0 ] || { echo "FAILED — no device was checked (wrong address?)" >&2; exit 1; }
 [ "$rc" -eq 0 ] && echo "OK — the GPU is ready to pass through" || { echo "FAILED — check dmesg" >&2; exit 1; }
 ```
 
@@ -3058,6 +3105,14 @@ bar1_bytes() {
 }
 
 DEVS=("$GPU_BDF")
+# Refuse to run on an address that is not present: the shipped GPU_BDF is a
+# deliberate placeholder, and every loop below would otherwise skip it and this
+# script would report nothing while doing nothing.
+if [ ! -e "/sys/bus/pci/devices/$GPU_BDF" ]; then
+    echo "STOP: $GPU_BDF does not exist on this machine." >&2
+    echo "      Edit GPU_BDF/GPU_AUDIO_BDF at the top of this script (find yours with: lspci -nn | grep -i nvidia)." >&2
+    exit 1
+fi
 [ -e "/sys/bus/pci/devices/$GPU_AUDIO_BDF" ] && DEVS+=("$GPU_AUDIO_BDF")
 
 # Release from vfio-pci. driver_override first, as always.
@@ -3087,8 +3142,13 @@ fi
 # Hand back to the host driver.
 modprobe "$HOST_DRIVER" 2>/dev/null || true
 for dev in "${DEVS[@]}"; do
-    [ -e "/sys/bus/pci/devices/$dev" ] || continue
-    if [ -e "/sys/bus/pci/drivers/$HOST_DRIVER/bind" ]; then
+    sysfs="/sys/bus/pci/devices/$dev"
+    [ -e "$sysfs" ] || continue
+    # Let the kernel pick the right driver for THIS function. Binding every
+    # device to $HOST_DRIVER is wrong for the GPU's audio function, which
+    # belongs to snd_hda_intel: it cannot bind to nvidia, and it is otherwise
+    # left with no driver at all (no host audio) until the next reboot.
+    if [ "$dev" = "$GPU_BDF" ] && [ -e "/sys/bus/pci/drivers/$HOST_DRIVER/bind" ]; then
         echo "$dev" > "/sys/bus/pci/drivers/$HOST_DRIVER/bind" 2>/dev/null || true
     else
         echo "$dev" > /sys/bus/pci/drivers_probe 2>/dev/null || true
