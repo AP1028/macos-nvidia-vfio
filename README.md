@@ -80,14 +80,17 @@ Enter firmware setup and enable, in roughly this order:
 | setting | value | why |
 |---|---|---|
 | **VT-d** / **VT for Directed I/O** (Intel) or **IOMMU** / **AMD-Vi** (AMD) | **Enabled** | Without it there are no IOMMU groups and no passthrough. The single most common omission. |
-| **Above 4G Decoding** | **Enabled** | Lets the firmware assign 64-bit BARs. Required for a large BAR. |
-| **Resizable BAR** / **Re-Size BAR Support** | **Enabled** | Required for the BAR sizing in section 5. |
+| **Above 4G Decoding** (if present) | **Enabled** | Lets the firmware hand out addresses above the 4 GiB line, which is where a large BAR has to live. **Many laptops have no such switch** and always decode above 4G; if it is absent, that is not a problem — check section 5 instead. |
+| **Resizable BAR** / **Re-Size BAR Support** (if present) | **Enabled** | Required for the BAR sizing in section 5. Some machines ship it on with no way to turn it off, which is the same thing as far as this guide is concerned. |
 | **SR-IOV** (if present) | Enabled | Harmless, occasionally needed. |
 | **Virtualization** (VT-x / SVM) | Enabled | Obviously. |
 
 Firmware menus differ wildly; on some boards "Above 4G" is under *PCI Subsystem Settings*
-and VT-d under *Advanced → System Agent*. If the options are absent, check for a BIOS
-update — some vendors ship them disabled and hidden until updated.
+and VT-d under *Advanced → System Agent*. An option being absent usually means the firmware
+does that thing unconditionally, or exposes no choice about it — plenty of laptops have no
+Above 4G and no Resizable BAR switch, and work fine. Check what the card actually advertises
+(section 5) before concluding that something is missing. On some boards a BIOS update does
+reveal settings the vendor shipped hidden, so it is worth a look if VT-d is the one absent.
 
 **Then verify from the host** (after booting Linux):
 
