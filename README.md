@@ -16,7 +16,7 @@ Metal 3 for applications.
 - [1. What you need](#1-what-you-need)
 - [2. Firmware setup](#2-firmware-setup)
 - [3. Host: IOMMU and vfio](#3-host-iommu-and-vfio)
-- [4. Binding the GPU to vfio-pci, and hot-swapping it back](#4-binding-the-gpu-to-vfio-pci-and-hot-swapping-it-back)
+- [4. Binding the GPU to vfio-pci, and hot-swapping it back *(optional)*](#4-binding-the-gpu-to-vfio-pci-and-hot-swapping-it-back-optional)
 - [5. Choosing the BAR size](#5-choosing-the-bar-size)
 - [6. OSX-KVM: the pieces macOS needs](#6-osx-kvm-the-pieces-macos-needs)
 - [7. libvirt: which config, at which stage](#7-libvirt-which-config-at-which-stage)
@@ -152,12 +152,17 @@ On most other distributions, add them to the kernel command line in your bootloa
 > standard reference for everything in this section and the next, and covers cases this
 > guide does not (multi-GPU hosts, `iommu=pt` trade-offs, ACS overrides).
 
-**Optional — bind the GPU to vfio-pci at boot.** Only needed if the GPU is claimed by a
-driver before you can intervene (or if it is the host's only GPU). Add:
+**Optional — bind the GPU to vfio-pci at boot.** Add:
 
 ```
 vfio-pci.ids=<vendor>:<device>,<vendor>:<audio-device>
 ```
+
+**This is one of the two routes to choose between, and it is the all-or-nothing one.** It
+suits a host whose only job is running the guest, or one where a driver claims the card
+before you can intervene. If you would rather keep the card usable on the host and hand it
+over on demand, leave this out — section 3 sets out both routes properly, including what
+each one costs you.
 
 Use your own vendor:device ids. Get them with `lspci -nn`:
 
@@ -198,26 +203,62 @@ To make it permanent, add `vfio-pci` to `/etc/modules-load.d/` (or NixOS
 
 ### Keep the host's NVIDIA driver off the passed-through card
 
+**Choose one of the two routes below, and only one.** They are alternatives, not steps, and
+the wrong pick is expensive to undo: blacklisting `nvidia` and binding at boot is simpler
+and needs no scripts, but it makes the card permanently unavailable to the host until you
+undo it and reboot. Hot-swapping keeps the card usable on the host and passes it to the
+guest on demand, at the cost of having to release it first — and of the scripts in
+[section 4](#4-binding-the-gpu-to-vfio-pci-and-hot-swapping-it-back-optional), which is why that
+section is optional but this material is not.
+
 If the host has an NVIDIA driver installed, make sure it does not grab the card you intend
-to pass through. Two ways:
+to pass through.
 
-* **`vfio-pci.ids=`** in the kernel command line, as above — the simplest and most robust.
-* Or softdep the driver: `softdep nvidia pre: vfio-pci` (distribution-specific).
+* **Route A — bind at boot, and give the card up on the host.** Put the ids in the kernel
+  command line (this is the `vfio-pci.ids=` parameter from section 2), and blacklist the
+  driver so nothing else can claim the card:
 
-**Do not blacklist `nvidia` if you intend to hot-swap.** The swap-back path in
-[section 4](#4-binding-the-gpu-to-vfio-pci-and-hot-swapping-it-back) rebinds the card to
-the host driver, and that needs `nvidia` to still be loadable. Keeping a second NVIDIA
-card working on the host is a reason too, but hot-swapping is the one that will bite you:
-blacklisting turns a reversible handoff into a reboot.
+  ```
+  vfio-pci.ids=<vendor>:<device>,<vendor>:<audio-device>
+  ```
+
+  ```
+  # /etc/modprobe.d/blacklist-nvidia.conf
+  blacklist nvidia
+  ```
+
+  **From then on the card belongs to vfio-pci.** Nothing on the host can use it until you
+  remove the blacklist and reboot. Simplest possible setup, and the right one if this
+  machine exists to run the guest.
+
+* **Route B — hot-swap it when you need it.** Leave both the driver and the card alone at
+  boot, then hand the card over at run time with the scripts in section 4, and take it back
+  the same way. The card stays usable on the host the rest of the time, which is how this
+  guide's machine is set up.
+
+  **Do not blacklist `nvidia` on this route**, and do not add `vfio-pci.ids=`: the swap-back
+  path rebinds the card to the host driver, which needs `nvidia` loadable, and a card bound
+  to vfio-pci from boot is not yours to hand back. Blacklisting turns a reversible handoff
+  into a reboot.
+
+  If you want the driver to lose the card without a blacklist, `softdep nvidia pre: vfio-pci`
+  does it (distribution-specific) — but that is a boot-time binding too, so it belongs to
+  route A despite not using `blacklist`.
 
 ---
 
-## 4. Binding the GPU to vfio-pci, and hot-swapping it back
+## 4. Binding the GPU to vfio-pci, and hot-swapping it back *(optional)*
+
+**This section is the other half of route B in
+[section 3](#keep-the-hosts-nvidia-driver-off-the-passed-through-card); skip it if you bound
+the card at boot under route A**, since there is then nothing to hand over and nothing to
+take back.
 
 This is the part that lets you use the GPU on the host and pass it to the guest without
 rebooting. **This repo ships two sets of scripts that do it** — see
 [Appendix B](#appendix-b-supporting-files-in-this-repo) — and the logic is explained here
-so you can adapt or debug them.
+so you can adapt or debug them. If you are happy to give the card up on the host instead,
+route A in section 3 avoids all of this and needs no scripts.
 
 ### First: find your GPU's address
 
@@ -502,20 +543,27 @@ virsh -c qemu:///system start macos
 
 **Switching to stage 2 is not just a `define`.** The domain expects the host to have been
 prepared first — the GPU already bound to `vfio-pci`, and its BAR1 already sized — because
-the guest reads the BAR at boot and cannot be given it later. `gpu-to-vfio.sh` takes the BAR
-size as a **bit index, not a byte count**, and defaults to 14 (16 GiB); `scripts/set-bar1.sh`
+the guest reads the BAR at boot and cannot be given it later.
+
+**On route A the card is already bound to `vfio-pci` from boot**, so only the BAR sizing is
+left; skip the `gpu-to-vfio` lines below and run `scripts/set-bar1.sh` instead, while the
+domain is off. **On route B**, hand the card over first:
+
+`gpu-to-vfio.sh` takes the BAR size as a **bit index, not a byte count**; `scripts/set-bar1.sh`
 is the one that accepts `16GiB`:
 
 ```bash
-sudo scripts/gpu-to-vfio.sh 14       # bit index 14 = 16 GiB: unbind, size BAR1, bind vfio-pci  (section 4-5)
+sudo scripts/gpu-to-vfio.sh 12       # bit index 12 = 4 GiB for passthrough (section 4-5)
 virsh -c qemu:///system destroy macos
 virsh -c qemu:///system define config/macos-passthrough.xml
 virsh -c qemu:///system start macos
 ```
 
-**Going back to stage 1** is the same in reverse: `destroy`, `define
-config/macos-install.xml`, `start` — after `sudo scripts/gpu-to-host.sh` to return the GPU
-to the host driver, since stage 1 does not pass anything through.
+**Going back to stage 1** is the same in reverse — `destroy`, `define
+config/macos-install.xml`, `start` — and **on route B** you must also run
+`sudo scripts/gpu-to-host.sh` first, to return the GPU to the host driver, since stage 1
+passes nothing through. On route A the card stays with `vfio-pci` and there is nothing to
+hand back.
 
 ### Notes that save time
 
