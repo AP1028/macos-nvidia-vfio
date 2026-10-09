@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 # set-bar1.sh — set the passed-through GPU's Resizable BAR1 size.
 #
-#   sudo ./set-bar1.sh 16GiB          # or: 17179869184 | 14
+#   sudo ./set-bar1.sh 4GiB           # or: 4294967296 | 12
 #
 # Accepts a size in bytes, a size with a GiB/MiB suffix, or a raw bit index.
-# There is deliberately NO default: this value decides the NullMoth driver's
-# VRAM budget, and a small one silently caps it at 192 MB.
+# There is deliberately NO default: this is the size the guest firmware has to
+# place, and too large a value breaks the passthrough outright.
 #
-#     budget = (fBarLen >= 4 GiB) ? fBarLen / 2 : 192 MB
+# Set it to 4 GiB. At 8 GiB and above the firmware places the BAR on a
+# non-canonical address (a 32-bit base in the high dword of a 64-bit BAR) which
+# QEMU/KVM reject, so the domain fails to start or the guest gets no aperture.
 #
-#   16 GiB BAR -> 8 GiB budget      256 MB BAR -> 192 MB budget
+# This is the HOST-side window, not the BAR the driver uses. Once macOS is up
+# the NullMoth driver places its own (16 GiB here) and takes the 8 GiB budget
+# from that, since budget = fBarLen / 2. Sizing this window to the card's
+# maximum does not increase the budget; it only stops the guest booting.
 #
 # The device MUST be unbound while this runs (see gpu-to-vfio.sh, which does the
 # unbind, the resize and the vfio bind in the right order).

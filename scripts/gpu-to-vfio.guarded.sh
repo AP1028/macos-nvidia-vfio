@@ -36,7 +36,7 @@ case "${1:-}" in -s) SILENT=true; shift;; esac
 # resource1_resize takes a BIT INDEX, not a byte count:
 #   0=1MB 1=2MB 2=4MB ... 10=1GiB 11=2GiB 12=4GiB 13=8GiB 14=16GiB
 # so the size in bytes is 2^(idx+20).
-BAR_IDX_VFIO=12   # 4 GiB — largest size that passes through correctly
+BAR_IDX_VFIO=12   # 4 GiB — largest host-side window that places correctly for a VM
 BAR_IDX_HOST=14   # 16 GiB — the maximum this card advertises
 
 # BAR1 size in bytes for a BDF (0 if unassigned or no resizable BAR1)

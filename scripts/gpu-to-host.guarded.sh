@@ -137,7 +137,7 @@ done
 # gpu-to-vfio shrinks BAR1 to 4 GiB because a larger one breaks guest
 # passthrough. Restore the maximum here so the host gets the full aperture
 # back. resource1_resize takes a BIT INDEX: 12=4GiB, 14=16GiB.
-BAR_IDX_VFIO=12   # 4 GiB
+BAR_IDX_VFIO=12   # 4 GiB — largest host-side window that places correctly for a VM
 BAR_IDX_HOST=14   # 16 GiB — the maximum this card advertises
 
 bar1_bytes() {

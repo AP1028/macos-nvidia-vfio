@@ -4,11 +4,15 @@
 #
 #   sudo ./gpu-to-vfio.sh [BAR_BIT_INDEX]
 #
-# BAR_BIT_INDEX defaults to 14 (16 GiB). It is a BIT INDEX, not a byte count:
+# BAR_BIT_INDEX defaults to 12 (4 GiB). It is a BIT INDEX, not a byte count:
 #   8=256MB  11=2GiB  12=4GiB  13=8GiB  14=16GiB      (size = 2^(idx+20))
-# Use the largest size your card advertises. A BAR under 4 GiB caps the NullMoth
-# driver's VRAM budget at 192 MB, because budget = fBarLen/2 (with a 192 MB
-# fallback below 4 GiB).
+#
+# 4 GiB is the largest size that places correctly for a VM. At 8 GiB and above
+# the guest firmware puts the BAR on a non-canonical address (a 32-bit base
+# written into the high dword of a 64-bit BAR), which QEMU/KVM reject, so the
+# domain either fails to start or the guest gets no usable aperture. This is the
+# HOST-side window, set while the domain is off; once macOS is up the NullMoth
+# driver places its own 16 GiB BAR and takes the 8 GiB budget from that.
 #
 # Set for your hardware:
 # ⚠️ EDIT THIS. The address below is DELIBERATELY FAKE (ff:1f.0 is not a real
@@ -23,7 +27,7 @@ HOST_DRIVER="${HOST_DRIVER:-nvidia}"
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 1; }
 
-BAR_IDX="${1:-14}"
+BAR_IDX="${1:-12}"
 
 # Refuse to run on an address that is not present. The shipped GPU_BDF is a
 # deliberate placeholder, and without this check the bind loop below silently

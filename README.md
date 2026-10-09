@@ -326,29 +326,84 @@ echo "$GPU" > /sys/bus/pci/drivers/nvidia/bind
 
 ### Or just use the scripts
 
-`scripts/gpu-to-vfio.sh` and `scripts/gpu-to-host.sh` do the above. If you would rather
-have the checks, `scripts/gpu-to-vfio.guarded.sh` and `scripts/gpu-to-host.guarded.sh`
-add them: they refuse to unbind while anything holds the GPU open, verify the binding
-afterwards, and offer a "schedule this for after your next logout" path for when the GPU is
-driving your desktop. See
-[Appendix B](#appendix-b-supporting-files-in-this-repo) for both sets, and **edit the
+**Two pairs, and the difference is whether they check first.**
+
+`scripts/gpu-to-vfio.sh` and `scripts/gpu-to-host.sh` are short. They set the address, clear
+`driver_override`, unbind, size BAR1, bind, and verify — nothing else. They assume the GPU is
+free. If something is using it, they will unbind anyway, and that is the case that can hang
+the kernel.
+
+`scripts/gpu-to-vfio.guarded.sh` and `scripts/gpu-to-host.guarded.sh` **check first and refuse
+instead.** They stop the NVIDIA services, count everything holding the card — including a
+compositor that has merely opened it, which is the usual holder and the one that is easy to
+miss — and when the GPU is in use they ask: force it, defer until after your next logout, or
+cancel. Verification afterwards is in both pairs. **Use these unless you have a reason not
+to**, and read the warning below before using the short ones on a desktop machine.
+
+See [Appendix B](#appendix-b-supporting-files-in-this-repo) for both sets, and **edit the
 addresses at the top of whichever you use** — none of them guesses which GPU you mean.
 
 ### Warning: unbinding a busy GPU can hang the kernel
 
 If the NVIDIA driver has the GPU open — X/Wayland running on it, a CUDA process, a
-monitoring daemon — unbinding it can wedge the machine. Before unbinding:
+monitoring daemon — unbinding it can wedge the machine. Before unbinding, find out who holds
+the card:
 
 ```bash
-sudo fuser -v /dev/nvidia* 2>/dev/null        # who is using it
+# if you have them (not every distribution ships these):
+sudo fuser -v /dev/nvidia* 2>/dev/null
 sudo lsof /dev/nvidia* 2>/dev/null | head
 ```
+
+Neither tool is guaranteed to exist, and `fuser` can report nothing when an LSM answers
+ENOENT on device paths, so the reliable check is to ask the kernel which processes have the
+nodes open. Substitute your GPU's address, since the DRM node numbers are not the PCI ones:
+
+```bash
+GPU=0000:01:00.0        # your card, from section 4
+nodes="/dev/nvidia*"
+for n in $(ls /sys/class/drm/); do
+  case "$n" in card[0-9]*|renderD*) ;; *) continue;; esac
+  case "$n" in *-*) continue;; esac
+  bdf=$(readlink -f "/sys/class/drm/$n/device" 2>/dev/null) || continue
+  [ "${bdf##*/}" = "$GPU" ] && nodes="$nodes /dev/dri/$n"
+done
+echo "this GPU's nodes:$nodes"
+for p in /proc/[0-9]*; do
+  for f in "$p"/fd/*; do
+    t=$(readlink "$f" 2>/dev/null) || continue
+    case " $nodes " in *" $t "*) echo "$(basename "$p") $(cat "$p/comm" 2>/dev/null) -> $t";; esac
+  done
+done | sort -u
+```
+
+**Do not stop at `/dev/nvidia*`.** A compositor that has merely *opened* the card holds it
+through `/dev/dri/cardN`, pins `nvidia_drm` just as firmly, and appears in none of the
+`/dev/nvidia*` output. That is the usual holder on a desktop machine, and missing it is what
+turns this warning into the paragraph below.
 
 Stop anything you find, and if the GPU is your desktop's output, log out or switch to a TTY
 first. On a single-GPU system this is the hard part; on a two-GPU system the passed-through
 card is usually idle and this is trivial.
 
-**Do not use `pkill -f` with a pattern that can match your own shell.**
+**When it does hang, it does not recover.** Observed twice here, both times from unbinding
+while a process still held the card. The driver's teardown stops part-way and reports it:
+
+```
+NVRM: Attempting to remove device 0000:01:00.0 with non-zero usage count!
+```
+
+The kernel thread doing the unload (`rmmod`) then sits in uninterruptible sleep — `D` state
+in `ps`, unkillable even with `kill -9` — and the module is left half-removed, with a
+refcount of `-1`. In that state the GPU accepts no driver at all: the card cannot be bound to
+`nvidia` or to `vfio-pci`, so passthrough is over until you reboot. **The stuck thread also
+holds the shutdown up**, so a normal `systemctl reboot` or `shutdown` will not complete and
+you have to cut the power — hold the power button. Nothing is lost by doing so; the machine
+is already past the point where a clean shutdown is possible.
+
+The only guard that works is the one in this section: make sure nothing holds the card
+*before* you unbind. Counting holders is what the guarded scripts in section 4 do, and the
+reason they refuse rather than proceed.
 
 ---
 
@@ -356,26 +411,28 @@ card is usually idle and this is trivial.
 
 Only one QEMU setting matters more: the `ICH9-LPC` argument in
 `config/macos-passthrough.xml` (see the comment there). The driver's VRAM budget is derived
-from BAR1:
+from the BAR it places for itself in the guest:
 
 ```c
 // kexts/NVRM/fb/nvrm-fb.cpp
 budget = (fBarLen >= 4GiB) ? fBarLen / 2 : NVRM_VRAM_BAR1_BUDGET;   // 192 MB fallback
 ```
 
-So **a BAR under 4 GiB caps you at 192 MB of VRAM budget** no matter how much the card
-has, and a 16 GiB BAR gives an 8 GiB budget.
+So **a guest BAR under 4 GiB caps you at 192 MB of VRAM budget** no matter how much the card
+has, and a 16 GiB guest BAR gives an 8 GiB budget. Note which BAR that is: what you set from
+the host, in this section, is a different one — and it is *smaller*, for a reason the next
+subsection explains.
 
 ### `resource1_resize` takes a bit index, not a byte count
 
 | bit index | size | | bit index | size |
 |---|---|---|---|---|
 | 8 | 256 MB | | 13 | 8 GiB |
-| 11 | 2 GiB | | **14** | **16 GiB** |
-| 12 | 4 GiB | | | |
+| 11 | 2 GiB | | 14 | 16 GiB |
+| **12** | **4 GiB** | | | |
 
 ```bash
-echo 14 > /sys/bus/pci/devices/$GPU/resource1_resize   # 16 GiB
+echo 12 > /sys/bus/pci/devices/$GPU/resource1_resize   # 4 GiB
 ```
 
 The card only accepts sizes it advertises. Read what yours offers:
@@ -392,19 +449,32 @@ budget, and that path is untested here.
 
 ### What size to pick
 
-**Rule of thumb: pick the largest size the card advertises — normally the card's VRAM,
-rounded down to a power of two.** NVIDIA exposes a BAR1 as large as its memory (or the
-largest supported power of two), which is why Resizable BAR exists at all. There is no
-measured downside to the largest size, and a large BAR is the entire point: it is what gives
-the driver room to work.
+**Set the host-side window to 4 GiB (bit 12). Do not use the largest size the card
+advertises, even though it is tempting and the budget formula below rewards it.**
 
-| your GPU's VRAM | try | expected budget |
-|---|---|---|
-| 24 GB (RTX 4090, 5090) | 16 GiB (bit 14) | 8 GiB |
-| 16 GB (RTX 5080, 4080) | 16 GiB (bit 14) | 8 GiB |
-| 12 GB (RTX 4070, 3060) | 8 GiB (bit 13) | 4 GiB |
-| 8 GB (RTX 4060, 3070) | 8 GiB (bit 13) | 4 GiB |
-| 4-6 GB | 4 GiB (bit 12) | 2 GiB |
+Two different BARs are in play, and this is the distinction the rest of the section turns on:
+
+| | sized by | size | why |
+|---|---|---|---|
+| **host window**, before the VM starts | you, via `resource1_resize` | **4 GiB** | the guest firmware has to be able to *place* it |
+| **guest BAR**, once macOS is up | the NullMoth driver | 16 GiB, or the card's maximum | the driver places its own, and macOS is free to put it high |
+
+A larger host window breaks passthrough. At 8 GiB and above, the guest firmware places the
+BAR on a **non-canonical address** — a 32-bit base written into the high dword of a 64-bit
+BAR, observed here as `0x8508000000000000` — and QEMU/KVM reject it, so the domain either
+fails to start or the guest comes up with no usable aperture. 4 GiB is the largest size that
+still places correctly. The card advertises 16 GiB; that is what the driver uses once it is
+running, not what you should write here.
+
+**The budget still works out**, which is what makes the small host window easy to argue with:
+the driver's 16 GiB guest BAR gives `fBarLen / 2` = **8 GiB**, the result this guide is about.
+The 192 MB fallback applies to a *guest* BAR under 4 GiB, which is not what this setting
+controls.
+
+The cost of the smaller host window is a smaller aperture while the guest is placing its own
+BAR, and that has not been a problem in practice here. It is also the one part of this setup
+that is a firmware interaction rather than a driver one, so a machine that places 8 GiB
+happily may exist; nothing here was measured above 4 GiB.
 
 Verify after setting it:
 
@@ -416,20 +486,19 @@ a=int(l[1].split()[0],16); b=int(l[1].split()[1],16); print((b-a+1)/2**30,'GiB')
 **The BAR size must be set while the VM is off.** The guest driver reads the capability at
 startup; changing it under a running guest does nothing useful.
 
-**This is the host-side setting only.** `resource1_resize` sizes the host's BAR1 before the
-guest starts; OpenCore's `ResizeGpuBars` must leave that BAR alone rather than size it a
-second time — section 9 gives its value.
+**This is the host-side setting only**, as the table above says. OpenCore's `ResizeGpuBars`
+must leave that BAR alone rather than size it a second time — section 9 gives its value.
 
 `scripts/set-bar1.sh` does this. **It takes the size as an argument and will not run without
-one** — pass bytes, a `GiB`/`MiB` suffix, or a bit index: `sudo scripts/set-bar1.sh 16GiB`.
+one** — pass bytes, a `GiB`/`MiB` suffix, or a bit index: `sudo scripts/set-bar1.sh 4GiB`. The
+`gpu-to-vfio` scripts default to bit 12 for the same reason.
 
 ---
 
 ## 6. OSX-KVM: the pieces macOS needs
 
-[OSX-KVM](https://github.com/kholia/OSX-KVM) provides the three things a vanilla QEMU
-macOS guest needs: a bootloader with the Apple-specific fixups (**OpenCore**), Apple's
-recovery image, and a reference QEMU invocation.
+[OSX-KVM](https://github.com/kholia/OSX-KVM) provides two of the pieces a macOS guest needs:
+a bootloader with the Apple-specific fixups (**OpenCore**), and Apple's recovery image.
 
 ```bash
 git clone https://github.com/kholia/OSX-KVM.git
@@ -443,15 +512,12 @@ dmg2img BaseSystem.dmg BaseSystem.img
 ls OpenCore/OpenCore.qcow2
 ```
 
-**Read `OpenCore-Boot.sh`.** It is the reference invocation, and it carries the single most
-important setting in this guide — **commented out**:
-
-```
-OpenCore-Boot.sh:47:  # -global ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off
-```
-
-That line is the difference between a GPU that macOS ignores and one it drives. See the
-comment on the `ICH9-LPC` argument in `config/macos-passthrough.xml`.
+**That is all this guide takes from OSX-KVM**: the OpenCore image and Apple's recovery media.
+It does not use OSX-KVM's `OpenCore-Boot.sh`, which is a plain-QEMU invocation, and this
+guide drives QEMU through libvirt instead. You do not need to read it. Be aware that the
+setting which makes the GPU work is present there but **commented out**, so it is missing
+from that script's invocation rather than configured by it; the working value is set in
+`config/macos-passthrough.xml` and explained under `ICH9-LPC` in Appendix A.
 
 ### What OpenCore is doing for you
 
@@ -527,11 +593,22 @@ Differences from stage 1:
 
 > ### ⚠️ Both configs must be edited to work
 >
-> They ship with a **deliberately fake** GPU address (`0xff:1f.0`) and paths from the
-> machine this was written on. Replace the address with your GPU's (the comment above it
-> tells you how) and point the disk paths at your own images. **The domain will fail to
-> start until you do** — that is intentional, so that a mindless copy-paste fails loudly
-> instead of quietly attaching the wrong device.
+> Three things, in both files:
+>
+> 1. **The `osk`.** They ship `osk=REPLACE_WITH_YOUR_OWN_OSK`, which is not a key and will not
+>    boot a display — see the note in section 6 for what it is, why it is not in the repo,
+>    and how to get one. **Edit this one first**, because its failure looks like a driver
+>    problem rather than a missing key: macOS starts, serves SSH, loads the kexts, places
+>    BAR1 correctly, and never initialises a display.
+> 2. **The GPU address.** A **deliberately fake** `0xff:1f.0`, so that a copy-paste fails
+>    loudly instead of quietly attaching the wrong device. The comment above it tells you
+>    how to substitute yours.
+> 3. **The disk and firmware paths.** They are from the machine this was written on — point
+>    them at your own images, and at your distribution's OVMF files.
+>
+> **Both 1 and 3 must be edited before the domain is worth starting.** It is not a clean
+> failure either way: with a fake address libvirt starts the domain and attaches nothing,
+> and with the placeholder `osk` the guest comes up without a display.
 
 Switch between them with:
 
@@ -714,13 +791,13 @@ block — so an install attempted from the installer-phase config cannot succeed
 > session leaves the passed-through card in a state that silently prevents
 > `applyModeSetConfig` from running at all — the same frames-generated, dark-panel pair, with
 > nothing pointing at the cause. This is prevention, not recovery: section 11 is what clears
-> a session that has already gone wrong. Reset on the host before that boot — the size is a
-> bit index, and 14 is 16 GiB:
+> a session that has already gone wrong. Reset on the host before that boot — the scripts
+> default to the right BAR size, so no bit index is needed:
 
 ```bash
 sudo scripts/gpu-to-host.sh          # unbind vfio
 echo 1 | sudo tee /sys/bus/pci/devices/0000:01:00.0/reset
-sudo scripts/gpu-to-vfio.sh 14       # rebind and re-size, bit index 14 = 16 GiB
+sudo scripts/gpu-to-vfio.sh          # rebind and re-size (defaults to 4 GiB, section 5)
 ```
 
 **Run `nullmoth-setup.sh` as the app does**, from a directory containing the audited
@@ -1828,14 +1905,19 @@ Two sets of scripts, pick either:
 
 **The simple ones** (`scripts/gpu-to-vfio.sh`, `scripts/gpu-to-host.sh`,
 `scripts/set-bar1.sh`) — short and readable, and easy to adapt. They do the minimum:
-clear `driver_override`, unbind, resize BAR1, bind vfio-pci.
+clear `driver_override`, unbind, resize BAR1, bind vfio-pci. They assume the GPU is free, so
+on a desktop machine prefer the guarded pair.
 
-**The guarded ones** (`scripts/gpu-to-vfio.guarded.sh`, `scripts/gpu-to-host.guarded.sh`,
-`scripts/gpu-vfio-status.sh`, `scripts/gpu-vfio-apply.sh`) — longer, and relatively safe
-to run because they check before they act: they refuse to unbind while anything holds the
-GPU open, they verify the binding afterwards, and they offer a "schedule this for your next
-logout" path for the case where the GPU is driving your desktop. If you are going to run
-this on a machine you care about, start with these.
+**The guarded ones** (`scripts/gpu-to-vfio.guarded.sh`, `scripts/gpu-to-host.guarded.sh`) —
+longer, and safe to run on a machine you care about, because they check before they act:
+they stop the NVIDIA services, count everything holding the card (a compositor that has
+merely opened it included), and when it is in use they offer to force, defer until after your
+next logout, or cancel. They verify the binding afterwards too. `-s` makes them report and
+exit 1 rather than ask, which is what you want from a script.
+
+Two more, for the deferred path: `scripts/gpu-vfio-status.sh` reports the current state and
+changes nothing, and `scripts/gpu-vfio-apply.sh` applies a switch that was deferred to your
+next logout.
 
 Both sets act only on the GPU address you set at the top of the file; neither guesses it.
 Both run on the host and need root, and both take a BAR size as an argument: the two
@@ -1852,7 +1934,7 @@ Both run on the host and need root, and both take a BAR size as an argument: the
 | `scripts/gpu-to-host.guarded.sh` | host | give the GPU back, with checks |
 | `scripts/gpu-vfio-status.sh` | host | report the current state; changes nothing |
 | `scripts/gpu-vfio-apply.sh` | host | apply a deferred switch, after the logout |
-| `scripts/set-bar1.sh` | host | set BAR1 size (`16GiB`, `17179869184` or bit index `14`; refuses to run without an argument) |
+| `scripts/set-bar1.sh` | host | set BAR1 size (`4GiB`, `4294967296` or bit index `12`; refuses to run without an argument) |
 | `tools/bench.sh` | guest | autonomous drag benchmark; parks/refusals/fps |
 | `tools/dragload.m` | guest | drag-load microbenchmark |
 | `tools/surfbench.m` | guest | surface throughput |
@@ -1909,7 +1991,7 @@ case "${1:-}" in -s) SILENT=true; shift;; esac
 # resource1_resize takes a BIT INDEX, not a byte count:
 #   0=1MB 1=2MB 2=4MB ... 10=1GiB 11=2GiB 12=4GiB 13=8GiB 14=16GiB
 # so the size in bytes is 2^(idx+20).
-BAR_IDX_VFIO=12   # 4 GiB — largest size that passes through correctly
+BAR_IDX_VFIO=12   # 4 GiB — largest host-side window that places correctly for a VM
 BAR_IDX_HOST=14   # 16 GiB — the maximum this card advertises
 
 # BAR1 size in bytes for a BDF (0 if unassigned or no resizable BAR1)
@@ -2527,7 +2609,7 @@ done
 # gpu-to-vfio shrinks BAR1 to 4 GiB because a larger one breaks guest
 # passthrough. Restore the maximum here so the host gets the full aperture
 # back. resource1_resize takes a BIT INDEX: 12=4GiB, 14=16GiB.
-BAR_IDX_VFIO=12   # 4 GiB
+BAR_IDX_VFIO=12   # 4 GiB — largest host-side window that places correctly for a VM
 BAR_IDX_HOST=14   # 16 GiB — the maximum this card advertises
 
 bar1_bytes() {
@@ -3032,11 +3114,15 @@ esac
 #
 #   sudo ./gpu-to-vfio.sh [BAR_BIT_INDEX]
 #
-# BAR_BIT_INDEX defaults to 14 (16 GiB). It is a BIT INDEX, not a byte count:
+# BAR_BIT_INDEX defaults to 12 (4 GiB). It is a BIT INDEX, not a byte count:
 #   8=256MB  11=2GiB  12=4GiB  13=8GiB  14=16GiB      (size = 2^(idx+20))
-# Use the largest size your card advertises. A BAR under 4 GiB caps the NullMoth
-# driver's VRAM budget at 192 MB, because budget = fBarLen/2 (with a 192 MB
-# fallback below 4 GiB).
+#
+# 4 GiB is the largest size that places correctly for a VM. At 8 GiB and above
+# the guest firmware puts the BAR on a non-canonical address (a 32-bit base
+# written into the high dword of a 64-bit BAR), which QEMU/KVM reject, so the
+# domain either fails to start or the guest gets no usable aperture. This is the
+# HOST-side window, set while the domain is off; once macOS is up the NullMoth
+# driver places its own 16 GiB BAR and takes the 8 GiB budget from that.
 #
 # Set for your hardware:
 # ⚠️ EDIT THIS. The address below is DELIBERATELY FAKE (ff:1f.0 is not a real
@@ -3051,7 +3137,7 @@ HOST_DRIVER="${HOST_DRIVER:-nvidia}"
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 1; }
 
-BAR_IDX="${1:-14}"
+BAR_IDX="${1:-12}"
 
 # Refuse to run on an address that is not present. The shipped GPU_BDF is a
 # deliberate placeholder, and without this check the bind loop below silently
@@ -3243,15 +3329,20 @@ nvidia-smi -L 2>/dev/null | sed 's/^/  /' || true
 #!/usr/bin/env bash
 # set-bar1.sh — set the passed-through GPU's Resizable BAR1 size.
 #
-#   sudo ./set-bar1.sh 16GiB          # or: 17179869184 | 14
+#   sudo ./set-bar1.sh 4GiB           # or: 4294967296 | 12
 #
 # Accepts a size in bytes, a size with a GiB/MiB suffix, or a raw bit index.
-# There is deliberately NO default: this value decides the NullMoth driver's
-# VRAM budget, and a small one silently caps it at 192 MB.
+# There is deliberately NO default: this is the size the guest firmware has to
+# place, and too large a value breaks the passthrough outright.
 #
-#     budget = (fBarLen >= 4 GiB) ? fBarLen / 2 : 192 MB
+# Set it to 4 GiB. At 8 GiB and above the firmware places the BAR on a
+# non-canonical address (a 32-bit base in the high dword of a 64-bit BAR) which
+# QEMU/KVM reject, so the domain fails to start or the guest gets no aperture.
 #
-#   16 GiB BAR -> 8 GiB budget      256 MB BAR -> 192 MB budget
+# This is the HOST-side window, not the BAR the driver uses. Once macOS is up
+# the NullMoth driver places its own (16 GiB here) and takes the 8 GiB budget
+# from that, since budget = fBarLen / 2. Sizing this window to the card's
+# maximum does not increase the budget; it only stops the guest booting.
 #
 # The device MUST be unbound while this runs (see gpu-to-vfio.sh, which does the
 # unbind, the resize and the vfio bind in the right order).
