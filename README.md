@@ -7,8 +7,7 @@ It is written from a machine where this works end to end. Everything here was me
 where something is an inference rather than a measurement, it says so.
 
 **Result:** driver-placed **16 GiB BAR**, **8 GiB VRAM budget**, GPU-composited desktop,
-Metal 3 for applications. A small BAR caps the VRAM budget at 192 MB; section 5 is about
-sizing it correctly.
+Metal 3 for applications.
 
 ---
 
