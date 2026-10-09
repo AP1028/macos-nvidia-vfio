@@ -758,8 +758,8 @@ Then keep the guest on a fixed address (a libvirt DHCP reservation, or a static 
 
 ## 9. Installing the NullMoth driver
 
-Follow the driver's own README for the package install; this section covers only what
-differs in a VM.
+Follow [the driver's own README](https://github.com/nullmoth/nvidia-macos-driver) for the
+package install; this section covers only what differs in a VM.
 
 **The tar package and 1401.app are NOT equivalent, and this is the single most important
 thing in this section.** 1401.app wraps two scripts. `install.sh` — the 129-line script in
@@ -853,21 +853,25 @@ installer sits beside it. Both come from `1401.app/Contents/Resources/` in the r
 * **boot-args**: exactly as in section 8.
 * **OpenCore**: **`ResizeGpuBars=-1`**, `ResizeAppleGpuBars=-1`, `DevirtualiseMmio=False`.
 
-  **`Kernel → Block com.apple.iokit.IONDRVSupport` is NOT needed here**, contrary to the
-  driver's README. That block exists so the firmware framebuffer cannot take display index 0
-  from NVRMFB, and with `<video>=none` the guest has no firmware framebuffer at all. The
-  README's requirement applies to bare metal, where you cannot remove it. **In a working
-  configuration there is no IONDRVSupport block, and NVRMFB owns index 0.**
+  **`Kernel → Block com.apple.iokit.IONDRVSupport` is NOT needed here**, contrary to
+  [the driver's README](https://github.com/nullmoth/nvidia-macos-driver). That block exists
+  so the firmware framebuffer cannot take display index 0 from NVRMFB, and with
+  `<video>=none` the guest has no firmware framebuffer at all. The driver's requirement
+  applies to bare metal, where you cannot remove it. **In a working configuration there is no
+  IONDRVSupport block, and NVRMFB owns index 0.**
 
-  **`-1` is deliberate, and is where this differs from the driver's README, which says
-  `13`.** The host sets BAR1 to 16 GiB before the domain starts (section 5), so OpenCore
-  must leave that BAR alone rather than resizing it underneath. It also pays: the budget is
-  `fBarLen / 2`, so 16 GiB gives **8 GiB against the README's 4**.
+  **`-1` is deliberate, and is where this differs from
+  [the driver's README](https://github.com/nullmoth/nvidia-macos-driver), which says
+  `13`.** The host sets BAR1 to 4 GiB before the domain starts (section 5), so OpenCore must
+  leave that BAR alone rather than resizing it underneath. It also pays: the driver places
+  its own 16 GiB BAR and the budget is `fBarLen / 2`, so 16 GiB gives **8 GiB against the
+  README's 4**.
 
   **1401.app writes this value itself when it installs the driver** — "switches OpenCore
   from the installer's small GPU BAR to the full 8 GB one", i.e. `13`. **Set it back to
-  `-1`** to keep the larger budget, or leave `13` and accept 4 GiB. Do not leave the host
-  BAR at 16 GiB while OpenCore resizes to 8.
+  `-1`** to keep the larger budget, or leave `13` and accept 4 GiB. Do not let OpenCore
+  resize the host's window: it was sized to 4 GiB for a reason (section 5), and `13` moves it
+  in the wrong direction.
 
 **What you should see.** Before the driver is installed, macOS drives the passed-through
 card with its own fallback framebuffer: the external display shows the Apple logo, a
@@ -1462,9 +1466,12 @@ explains why it is needed and how to verify it reached QEMU.
          hotplug for the bridges macOS defers enumeration of everything behind a
          root port to runtime, which never happens: the card then shows up as
 
-         The host BAR1 is sized to 16 GiB before the domain starts
-         (resource1_resize, bit index 14; see the README and gpu-to-vfio), and a
-         16 GiB BAR1 passes through correctly in this configuration.
+         The host BAR1 is sized to 4 GiB before the domain starts
+         (resource1_resize, bit index 12; see the README and gpu-to-vfio). That
+         is the largest window the guest firmware can place: at 8 GiB and above
+         it lands on a non-canonical address and QEMU/KVM reject it. Once macOS
+         is up the driver places its own 16 GiB BAR, which is where the 8 GiB
+         budget comes from, so a small host window costs nothing here.
 
          Both functions are matched by host address, and managed='yes' lets
          libvirt bind vfio itself (the card is already on vfio-pci anyway).
@@ -2859,12 +2866,15 @@ while IFS= read -r line; do
     printf "    driver:       ${drv_color}%s\e[0m\n" "$drv"
     printf "    iommu_group:  %s\n" "$iommu"
 
-    # Resizable BAR1: 16 GiB is what both the host and the guest want
+    # Resizable BAR1: the two states want different sizes. 4 GiB is the largest
+    # the guest firmware can place, so that is the passthrough size; 16 GiB is
+    # the card's maximum and what the host driver prefers when idle. Which one
+    # is "right" therefore depends on the driver column above.
     if [ -e "/sys/bus/pci/devices/$bdf/resource1_resize" ]; then
         bar_sz=$(bar1_human "$(bar1_bytes "$bdf")")
         case "$bar_sz" in
-            "4 GiB")  printf "    BAR1:         \e[33m%s\e[0m  (small: caps the driver budget at 2 GiB)\n" "$bar_sz" ;;
-            "16 GiB") printf "    BAR1:         \e[32m%s\e[0m  (correct for passthrough)\n" "$bar_sz" ;;
+            "4 GiB")  printf "    BAR1:         \e[33m%s\e[0m  (passthrough size)\n" "$bar_sz" ;;
+            "16 GiB") printf "    BAR1:         \e[32m%s\e[0m  (host maximum; gpu-to-vfio will shrink it to 4 GiB)\n" "$bar_sz" ;;
             *)        printf "    BAR1:         %s\n" "$bar_sz" ;;
         esac
     fi

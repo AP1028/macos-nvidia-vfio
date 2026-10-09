@@ -70,12 +70,15 @@ while IFS= read -r line; do
     printf "    driver:       ${drv_color}%s\e[0m\n" "$drv"
     printf "    iommu_group:  %s\n" "$iommu"
 
-    # Resizable BAR1: 16 GiB is what both the host and the guest want
+    # Resizable BAR1: the two states want different sizes. 4 GiB is the largest
+    # the guest firmware can place, so that is the passthrough size; 16 GiB is
+    # the card's maximum and what the host driver prefers when idle. Which one
+    # is "right" therefore depends on the driver column above.
     if [ -e "/sys/bus/pci/devices/$bdf/resource1_resize" ]; then
         bar_sz=$(bar1_human "$(bar1_bytes "$bdf")")
         case "$bar_sz" in
-            "4 GiB")  printf "    BAR1:         \e[33m%s\e[0m  (small: caps the driver budget at 2 GiB)\n" "$bar_sz" ;;
-            "16 GiB") printf "    BAR1:         \e[32m%s\e[0m  (correct for passthrough)\n" "$bar_sz" ;;
+            "4 GiB")  printf "    BAR1:         \e[33m%s\e[0m  (passthrough size)\n" "$bar_sz" ;;
+            "16 GiB") printf "    BAR1:         \e[32m%s\e[0m  (host maximum; gpu-to-vfio will shrink it to 4 GiB)\n" "$bar_sz" ;;
             *)        printf "    BAR1:         %s\n" "$bar_sz" ;;
         esac
     fi

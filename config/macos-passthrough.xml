@@ -309,9 +309,12 @@
          hotplug for the bridges macOS defers enumeration of everything behind a
          root port to runtime, which never happens: the card then shows up as
 
-         The host BAR1 is sized to 16 GiB before the domain starts
-         (resource1_resize, bit index 14; see the README and gpu-to-vfio), and a
-         16 GiB BAR1 passes through correctly in this configuration.
+         The host BAR1 is sized to 4 GiB before the domain starts
+         (resource1_resize, bit index 12; see the README and gpu-to-vfio). That
+         is the largest window the guest firmware can place: at 8 GiB and above
+         it lands on a non-canonical address and QEMU/KVM reject it. Once macOS
+         is up the driver places its own 16 GiB BAR, which is where the 8 GiB
+         budget comes from, so a small host window costs nothing here.
 
          Both functions are matched by host address, and managed='yes' lets
          libvirt bind vfio itself (the card is already on vfio-pci anyway).
