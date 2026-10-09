@@ -850,6 +850,9 @@ installer sits beside it. Both come from `1401.app/Contents/Resources/` in the r
 * **`/Library/GPUBundles/nvmtl/nvrm610.conf` — leave it at the shipped values.** They are
   correct once BAR1 is large. **The installer rewrites this file on every install**, so
   check it afterwards.
+* **`NVMTL_HWPOOL` — leave it unset. Do not export `NVMTL_HWPOOL=1`.** It installs private
+  pool classes and correlates with a kernel panic. Nothing here needs it, so the only action
+  is to not set it.
 * **boot-args**: exactly as in section 8.
 * **OpenCore**: **`ResizeGpuBars=-1`**, `ResizeAppleGpuBars=-1`, `DevirtualiseMmio=False`.
 
@@ -912,9 +915,6 @@ sdb   the OpenCore ESP
 
 If `virsh domblklist` shows more, the running domain is not the one in this repo:
 `virsh undefine --nvram` and define it again.
-
-> **Do not enable `NVMTL_HWPOOL=1`.** It installs private pool classes and correlates with
-> a kernel panic.
 
 ---
 
