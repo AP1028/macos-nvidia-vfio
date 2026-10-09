@@ -712,16 +712,44 @@ Then keep the guest on a fixed address (a libvirt DHCP reservation, or a static 
    `debug=0x8 serial=1` sends the kernel log to COM1. With `video=none`, that is **the only
    channel for driver messages.** See section 10.
 
-2. Set `SecureBootModel` to `Disabled` and `csr-active-config` as the driver's README
-   requires. Do this **before the stage-2 boot** — the driver install runs there and cannot
-   run with SIP on:
+2. **Turn SIP off.** This is an edit to OpenCore's `config.plist` — a file on the OpenCore
+   ESP — not a setting inside macOS, and not something in the libvirt XML. Do it **before the
+   stage-2 boot**, because the driver install runs there and cannot run with SIP on.
+
+   Mount the ESP (recipe in section 6) and change two keys:
+
+   ```bash
+   sudo modprobe nbd max_part=16
+   sudo qemu-nbd --fork --connect=/dev/nbd1 OpenCore/OpenCore.qcow2
+   sudo mount /dev/nbd1p1 /mnt
+   $EDITOR /mnt/EFI/OC/config.plist
+   sync; sudo umount /mnt; sudo qemu-nbd --disconnect /dev/nbd1
+   ```
+
+   | what to change | where | value |
+   |---|---|---|
+   | `csr-active-config` | `NVRAM → Add → 7C436110-AB2A-4BBB-A880-FE41995C9F82` | `<430A0000>` — the value tested here. Add the key if it is absent |
+   | `SecureBootModel` | `Misc → Security` | `Disabled` |
+
+   `csr-active-config` is a **data** value, not a string: in a plist editor that means
+   `<430A0000/>`. The same variable is what `nvram -p` reports from inside the guest, which
+   is how section 9 checks it arrived.
 
    > **SIP must be off before the driver installer runs.** With SIP on, `install.sh` stops
    > at "back up kernel collection / Operation not permitted", which reads as a corrupt
    > package or a bad download — it is neither. The kernel collection carries the SIP
-   > `restricted` flag, and root cannot read it with SIP on. Set `csr-active-config` in
-   > OpenCore, reboot, confirm `csrutil status` says `disabled`, and only then install. See
-   > section 9.
+   > `restricted` flag, and root cannot read it with SIP on.
+   >
+   > **Reboot the guest and confirm before installing:**
+   >
+   > ```bash
+   > csrutil status                    # must say: System Integrity Protection status: disabled
+   > nvram -p | grep csr-active-config # must be present, not %00%00%00%00
+   > ```
+   >
+   > If it still says `enabled`, the edit did not take — check you edited the ESP the guest
+   > actually boots from (section 9 has the check), and that you rebooted rather than just
+   > restarted the domain.
 
 3. Shut down the guest, switch the domain to **stage 2** (section 7), and boot with the GPU
    passed through.
